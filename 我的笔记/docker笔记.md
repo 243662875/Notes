@@ -33,7 +33,7 @@ docker rmi ubuntu:latest             #删除本地仓库的镜像，如果正在
 Docker rmi $(docker images -a|grep none|awk '{print $3}')  删除没有打tag的镜像
 ```
 
-## 3、镜像迁移
+## 3、镜像迁移|导入和导出
 
 ```dockerfile
 docker save nginx:latest > nginx.tar.gz		#将镜像导出来，就是指保存到本地
@@ -124,6 +124,7 @@ cd /usr/local/harbor/
 ```shell
 docker create debian:jessie		#创建容器但不启动
 docker run -it debian:jessie /bin/bash		#运行容器,通过bash进入debian系统,退出容器后会关闭. 
+docker run -p 3306:3306 --name mysql -e MYSQL_ROOT_PASSWORD=123456 -d mysql	#启动mysql容器
 docker run --restart=always -itd centos:latest /bin/bash	#后台运行容器,加上--restart=always参数随宿主机一同启动，其他可选参数如下
 	-a stdin: 指定标准输入输出内容类型，可选 STDIN/STDOUT/STDERR 三项；
 	-d: 后台运行容器，并返回容器ID；
@@ -177,7 +178,7 @@ docker cp /www/test mycon:/www/		#将主机的/www/test目录拷贝到容器myco
 docker cp mycon:/www /tmp/test		#将容器mycon中的/www目录拷贝到主机的/tmp/test目录中
 ```
 
-## 7、容器保存和迁移
+## 7、容器导出和导入
 
 容器中的所有更改都是在沙盒环境下,当容器停止后所有的更改都会丢失，如果需要保存修改，可以用docker commit命令，把修改的容器保存成一个新的镜像。
 
@@ -287,9 +288,215 @@ docker run -d -p 80:80 -p 443:443 nginx	#后台运行容器并进行端口映射
 docker run -d -p 192.168.10.1:80:80 nginx	#这样映射后，容器只会收到来自主机IP为192.168.10.1的请求
 ```
 
-有时候，一个容器运行的应用程序，也需要和另一个容器的应用程序进行数据交换，此时，就需要通过容器连接来完成2个容器之间的数据交换。要设置容器间通信，我们可以通过在创建容器时加上 --link 参数来实现。
+有时候，一个容器运行的应用程序，也需要和另一个容器的应用程序进行数据交换，此时，就需要通过容器连接来完成2个容器之间的数据交换。要设置容器间通信，我们可以通过在创建容器时加上 --link 参数来实现。设置容器间通信，只需要指定被连接的容器，并不需要指明被连接容器的端口，也不需要通过-p参数映射端口
 
+我们创建一个mysql容器，并让一个web服务器连接到它
 
+```bash
+docker run -d --name mysql mysql		#创建mysql容器
+docker run -d -p 80:80 --name myweb --link mysql nginx	#启动一个nginx 连接到mysql容器
+```
+
+在某些情况下，被连接的容器名称可能与连接容器内的某些配置重名，对应这样的情况，docker支持容器间使用别名进行连接的方式。
+
+```bash
+docker run -d -p 80:80 --name myweb --link mysql:db nignx  #使用--link name:alias 的方式设置被连接的容器，这样定义后，我们在nginx容器中访问mysql容器时就可以使用db作为访问时的主机名
+docker exec -it myweb /bin/bash		#进入容器后可以使用 env 命令查看环境变量信息
+```
+
+## 10、dockerfile
+
+为了简化制作镜像的过程，方便在多台机器上共享镜像，docker提供了一种可以通过配置文件创建镜像的方式----使用dockerfile构建镜像，这种方式是将制作的镜像操作全部写入到一个文件中，然后docker build命令可以读取这个文件中的所有操作，并根据这些配置创建出相应的镜像。
+
+dockerfile中的内容主要以两种形式出现：注释行和指令行，以#开头的文本是注释行[^注意： 在dockerfile中，并非所有的以#开头的行都是注释行，有一类特殊的参数是通过#开头的行来指定的]，指令行主要分为两部分，行首是INSTRUCTION，即指令的名称，然后是arguments，即指令所接收的参数。指令是不区分大小写，但为了更清晰的分辨指令和参数，指令一般是大写。
+
+```dockerfile
+# Comment
+INSTRUCTION arguments
+# directive=value		#这样的称为解析指令行，主要是提供一项解析dockerfile需要使用的参数。解析指令行很少被用到。
+```
+
+下面是一个简单的构建redis镜像的dockerfile，文件名为dockerfile，如果是其他文件名需要 在构建镜像的时候 加上 -f 指定dockerfile文件
+
+```dockerfile
+FROM centos:7.4
+MAINTAINER fana "17602199364@163.com"
+
+WORKDIR /home
+
+RUN yum install -y wget gcc && \      
+        rpm --rebuilddb && \
+        yum -y install gcc automake autoconf libtool make && \
+        yum -y install net-tools && \
+        yum -y install tar && \
+        wget http://download.redis.io/redis-stable.tar.gz && \
+        tar -xvzf redis-stable.tar.gz && \
+        mv redis-stable/ redis && \
+        rm -f redis-stable.tar.gz && \
+        yum clean all && \
+        cd redis && \
+        make && make install
+        
+EXPOSE 6379
+ENTRYPOINT redis-server /home/redis.conf
+CMD ["redis-server"]
+# --------------------------------------------------------------- #
+# 第一条指令from centos:7.2.1511 中的form指令，表示我们要构建镜像所基于的镜像，通常情况下我会使用一个系统镜像来构建我们的应用，接下来是linux的命令。表示我们构建镜像是所执行的操作。 
+# 因为有make命令，所以要安装   yum -y install gcc automake autoconf libtool make 
+# 想要查看ifconfig，所以安装net-tools     yum -y install net-tools
+#利用这个Dockerfile构建镜像命令：
+docker build -t centos/redis .	#执行命令后会自动查找dockerfile
+#启动容器： 
+docker run -d --name redis -p 6379:6379 centos/redis
+```
+
+### 10.1、基础指令
+
+**FROM指令**
+
+docker的镜像都是在bootfs层上实现的，但是我们不必每次构建镜像都是从bootfs层开始，我们可以直接在其他已经搭建好的镜像上进行修改，FROM指令就是用来指定我们所要构建的镜像是基于那个镜像建立的，==from指令必须作为第一条指令==，不过在一个dockerfile里是允许出现多个from指令的，以每个from指令为界限，都会生成不同的镜像。
+
+FROM指令主要有以下几种格式
+
+```dockerfile
+FROM <image>			#第一种
+FROM <image>:<tag>		#第二种
+FROM <image>@<digest>	#第三种
+# tag 和 digest 都是可选的，当不指定这两项时，docker会使用latest这个tag
+```
+
+**MAINTAINER指令** ： 用于提供镜像的作者信息.
+
+### 10.2、控制指令
+
+控制指令是dockerfile的核心部分，我们可以通过控制指令来描述整个镜像的构建过程
+
+**RUN指令**：构建镜像过程中，我们需要在基础镜像中做很多操作，run指令就是用来给定需要做什么操作的。
+
+RUN指令有两种使用格式
+
+```dockerfile
+RUN command param1 param2	#如：RUN mkdir data 这种形式，在构建镜像时，实际上是以shell程序来执行操作的
+RUN ["executbale","param1","param2", ...]	#如：RUN ["/bin/bash","-c","echo hello"] 这种形式可以有效规避在某些基础镜像中没有shell程序，或者用于需要临时切换shell程序的时候
+```
+
+注意：[^ 在使用RUN指令时，docker排断是否采用缓存构建的依据，是给出的指令是否与生成缓存使用的指令一致，也就是说，本次执行的结果与缓存中不一致，会采用缓存中的数据，而不再执行命令，这可能导致不是我们想要的结果，比如使用RUN apt-get update 时都需要使用最新的结果，可以使用docker build 命令时加上 --no-cache参数的方式解决这个问题]
+
+**WORKDIR指令**：用于切换构建过程中的工作目录。
+
+给出的工作目录可以是绝对目录，也可以是相对目录
+
+```dockerfile
+WORKDIR /usr/local	#绝对目路径
+WORKDIR local	#如果是相对路径，在切换工作目录时，会参考当前的工作目录进行。
+
+#也可以在workdir指令中使用环境变量
+ENV BASEDIR /project
+WORKDIR $BASEDIR /www
+```
+
+**ONBUILD指令**：这是一条非常特殊的指令，他可以携带别的指令。使用这条指令不会在构建当前镜像时执行，而是在构建其他镜像时使用FROM指令把z这个镜像作为基础镜像时才会执行。简单来说，就是我们在构建子镜像时运行的指令。
+
+```dockerfile
+ONBUILD INSTRUCTION arguments	#把我们需要执行的指令放在ONBUILD指令之后就能设置一个构建触发器，当其他dockerfile把这个镜像作为基础镜像并进行构建时，执行完FROM指令之后，设置的ONBUILD指令都将被触发
+```
+
+ONBUILD指令，在生成镜像时会写入到镜像的特征列表中，可以使用docker inspect命令看到镜像的构建命令，当子镜像构建完成后，这些指令也都随着消失了。它不会在继承到新构建的镜像中。
+
+### 10.3、引入指令
+
+很多场合下，我们希望将文件加入到即将构建的镜像中，引入指令就可以帮我们实现这个目的。
+
+**ADD指令**：在构建容器的过程中，可能需要将一些软件源码，配置文件，执行脚本等导入到镜像的构建过程，这时可以使用ADD指令将文件从外部传递到镜像内部。
+
+ADD指令有以下两种形式
+
+```dockerfile
+ADD <src>... <dest>		#第一种方式 如：ADD hom* /mydir/ 如果我们给出的路径是目录，那么目录本事不会复制到镜像，被复制的是目录的内容
+ADD ["<src>", "<dest>"]		#和上面的方式没有太大差别，只是避免文件路径中带有空格的情况。
+```
+
+ADD指令可以自动完成对压缩文件的解压，如果我们提供的是能够识别的压缩文件格式，则会自动解压到镜像的目标路径中。
+
+**COPY指令**：dockerfile中还有一种引入文件的方式就是copy，与ADD指令相似
+
+COPY指令二种使用格式
+
+```dockerfile
+COPY <src> ... <dest>	# 第一种方式copy 原路径<src>、目标路径<dest>
+COPY ["<src>", ... "<dest>"]	#与add指令的规则几乎是一样的。主要区别就是不能识别网址和自动解压。不需要解压的文件可以使用这个指令
+```
+
+### 10.3、执行指令
+
+执行指令能够通过镜像建立容器时，容器默认执行的命令，我们通常使用这些命令启动镜像中的主要程序
+
+**CMD指令**：docker容器是为运行单独的应用程序而设计的，当docker容器启动时，实际上是对程序的启动。而在dockerfile中，就可以通过CMD指令来创建镜像容器中的主体程序。
+
+CMD指令有三种使用格式
+
+```dockerfile
+CMD command param1 param2 ...	#第一种方法：
+CMD ["executable","param1","param2" ...]	#和上面的方法类似，都是取决于是否使用shell程序来执行命令
+CMD ["param1","param2" ...]		#这种格式 是将参数传给ENTRYPOINT指令
+# 需要注意：容器中只会绑定一个应用程序，所以在dockerfile中只能存在一个CMD指令，如果我们填写多个CMD指令，会覆盖掉之前的指令。
+```
+
+**ENTRYPOINT指令**：镜像所指定的应用程序在容器运行时，难免需要一些系统服务或者其他程序的支持。我们可以在CMD指令中启动这个服务，但是这样会让启动服务的命令与启动主程序的命令混在一起，ENTRYPOINT指令就是专门用于主程序启动前的准备工作的。
+
+使用ENTRYPOINT指令的方式和CMD指令的方式相似。
+
+```dockerfile
+ENTRYPOINT ["executable","param1","param2" ...]	#第一种方式,直接执行程序
+ENTRYPOINT command param1 param2 ...	# 使用shell程序来执行。 这两种格式在效果上和CMD是一样的
+```
+
+需要注意：当ENTRYPOINT指令被指定时，所有的CMD指令或者通过docker run 等方式的应用程序启动命令，不会在容器启动时执行。而是把这些命令当成参数。所以我们在使用 ENTRYPOINT 时需要特别注意使用的方法。我们应该在避免在使用 ENTRYPOINT指令 时把 CMD指令的形式配置成shell格式，（即：CMD command param ... ）因为这样做，在 ENTRYPOINT 里是以次级命令的方式启动 CMD的shell进程。docker 就不会把容器的生命周期绑定到进程上。可能会造成意想不到的结果。
+
+### 10.4、配置指令
+
+若想对镜像或者通过镜像所创建的容器进行相关的环境或者网络 等配置时，可以通过配置指令来实现。
+
+**EXPOSE指令**：每个容器都有自己的端口系统，相互之间不连通也不共享，容器间的网络通信需要通过docker转接来完成。如果容器的应用程序需要让其他镜像访问到他所提供的端口，就需要显示出对外提供的端口号。我们要生成镜像时对外开放端口，可以使用EXPOSE指令。
+
+EXPOSE指令的使用方法很简单，将需要共享的端口逐个传入即可。
+
+```dockerfile
+EXPOSE <prot>
+```
+
+需要注意：EXPOSE指令所指定的端口和 docker run 命令中 -p 参数所指定的端口，含义上是有区别的，EXPOSE指令给出的端口，是基于镜像的容器需要敞开的端口，而创建容器时使用的 -p参数指定的端口，是用于建立容器到宿主机外部的端口映射。就是说，要从外部访问容器内程序监听的端口，首先需要通过EXPOSE指令将这个端口标记对外敞开，在根据实际访问的来源进行配置。从其他容器中访问则需要创建该容器时使用 --link 连接到 此容器，从宿主机外部访问则需要创建该容器时使用 -p参数，建立宿主机对外端口与容器端口的转发。
+
+**ENV指令**：在dockerfile中，我们也能指定环境变量，环境变量能够替换dockerfile中其他指令出现的参数，使用ENV指令就能设置dockerfile中的环境变量。
+
+```dockerfile
+ENV <key> <value>		#可以指定一个环境变量，在键名之后的数据都会被视为环境变量的值，如 ENV myDog The Dog
+ENV <key>=<value>		#这种格式能够一次指定多个环境变量，并且可以使用\进行换行连接 如 ENV myDog="The Dog" myCat=The\ Cat \
+```
+
+**LABEL指令**：使用LABEL指令，可以为即将生成的镜像提供一些元数据作为标记，这些标记能够帮助我们展示镜像的信息。
+
+LABEL指令的用法
+
+```dockerfile
+LABEL version="1.0"	#在LABEL指令之后，带入我们希望加入的元数据的键值对，如果有多个键值对，可以使用空格分隔他们，在键和值中，如果带有空格，可以使用引号，如果数据过长可以使用 \ 进行换行
+LABEL "multi.labell"="value" "com.example.vendor"="You Ming" #推荐把所以的标记写到一个LABEL指令中
+```
+
+**USER指令**：USER指令用于设置执行用户，我们可以传入用户的名称或UID作为USER指令的参数
+
+```dockerfile
+USER nginx
+```
+
+**ARG指令** ：在构建过程中，我们有时还需要进行配置或者使用一些变量，ARG指令就是为我们提供了设置变量的方法。ARG指令与ENV指令有很大的不同，ENV指令用于配置环境变量，他的值会影响镜像的编译，也会体现在容器的运行中，需要改变环境变量时，要在容器启动时进行赋值。而ARG指令则只用于构建镜像的过程中，其效果不会作用于基于此镜像的容器，而覆盖参数的方式也是通过docker build 中的--build-arg来进行的
+
+使用ARG的方式
+
+```dockerfile
+ARG <name>	#
+ARG <name>=<default>	#
+```
 
 
 
