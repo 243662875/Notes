@@ -1,26 +1,98 @@
 [TOC]
 
-# 第一章 docker的基础
+# 第一章：docker基础
+
+参考：https://mp.weixin.qq.com/s/bcafrpR21PAr71mBJb6iFw
+
+**docker的优点**
+
+1、资源利用率比传统虚拟机高
+
+2、支持跨节点部署
+
+3、版本可控，组件可服用
+
+4、共享镜像
+
+5、轻量级，易维护
+
+**docker的缺点**
+
+1、宿主机资源没有完全做到隔离
+
+2、语言不成熟
+
+
 
 ## 1、安装docker
 
+docker官网建议使用Ubuntu操作系统作为宿主机，应该看重了Ubuntu默认支持AUFS文件系统的缘故。linux内核最小版本是3.10，必须是64位操作系统，
+
 ``` shell
+#centos上安装docker
 yum install -y yum-utils device-mapper-persistent-data lvm2		#安装依赖包
 yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo	#添加阿里yum源
 yum makecache fast	#更新yum缓存
 yum -y install docker-ce	#安装docker
 systemctl start docker		#启动docker
 docker run -itd -p 80:80 --name webserver nginx  /bin/bash   #启动一个容器,先从本地仓库查找镜像,如果没有再从官网上查找
+
+# 第二种方式，使用docker的离线安装docker，yum可以帮助我们安装依赖
+yum localinstall -y docker-ce-17.09.1.ce-1.el7.centos.x86_64.rpm
+
+#Ubuntu上安装docker
+wget -qo- https://get.Docker.com/ | sh		#使用wget获取docker安装包，更新docker也是一样
+
 ```
+
+[Windows上安装docker参考1：菜鸟教程](https://www.runoob.com/docker/windows-docker-install.html)
 
 **卸载docker**
 
 ``` bash
+#centos上卸载docker
 yum remove docker-ce		#卸载docker
-rm -rf /var/lib/docker		#删除docker目录
+rm -rf /var/lib/docker		#删除docker保留的数据
+
+#Ubuntu上卸载docker
+apt-get purge lxc-Dcoker	#卸载docker
+apt-get autoremove --purge lxc-docker	#卸载docker安装包和依赖的模块
+rm -rf /var/lib/docker		#删除docker所保留的数据
 ```
 
+**配置docker**
+
+通常情况下docker默认的参数就可以了，如果想对docker定制化安装，就需要配置docker。
+
+1、创建docker组
+
+默认情况下docker会监听本地的socket文件，这个文件是root用户创建的，其他用户没有读写权限，我们创建一个docker组，然后将docker用户加到docker组里，这样可以回避掉socket文件没有读写权限的问题
+
+```bash
+groupadd docker
+usermod -aG docker ubuntu	#创建用户到组
+```
+
+2、调整内存参数
+
+```bash
+#在使用docker中，可能出现类似下面的告警，启动系统中内存和swap统计功能后可以解决
+warning :your kernel does not support cgroup swap limit
+warning :your kernel does not spport swap limit capabilities limitation discarded
+#解决方法：
+#编辑/etc/default/grub文件
+#修改 GRUB_CMDLINE_LIUNX参数如下：
+GRUB_CMDLINE_LIUNX="cgroup_enable=memory swapaccount=1"
+#然后执行 sudo update-grub 更新grub，最后重启系统。
+```
+
+3、调整ufw（Ubuntu系统上的防火墙）参数
+
+如果想从另一台机器访问这台主机上的容器，就需要允许外来的请求，docker daemon默认的服务tcp端口是2375.加密的端口是2376
+
 ## 2、使用镜像
+
+[关于docker的基本命令可以参考菜鸟教程](<https://www.runoob.com/docker/docker-command-manual.html>)
 
 ``` dockerfile
 docker pull ubnutu			#从互联网上下载一个镜像到本地仓库,默认使用latest这个标签
@@ -47,7 +119,10 @@ docker load -i nginx.tar.gz		#或者使用这个命令
 
 官方提供的镜像仓库网址：https://hub.docker.com/
 
-``` docker login -u user -p password server_url		#登陆docker Hub ```
+```bash
+docker login -u user -p password server_url		#登陆docker Hub
+docker logout localhost:8080		#退出
+```
 
 直接输入 docker login 也可以登录 默认登陆的是https://hub.docker.com/
 
@@ -69,7 +144,70 @@ docker run -d -p 5000:5000 --restart=always --name registry -v /opt/registry:/va
 
 ### 5.2、harbor部署
 
- 需要基于docker环境
+ 需要基于docker环境，因为我们使用docker来启动harbor镜像库，所以需要先安装docker
+
+创建docker配置文件
+
+```bash
+mkdir /etc/docker && vi /etc/docker/daemon.json
+```
+
+修改daemon.json文件中的内容
+
+```json
+# data-root: docker的数据目录，务必保证目录存在
+# hub.paas: harbor镜像库域名
+#192.168.191.166: harbor镜像库IP
+
+{
+        "log-driver": "journald",
+        "data-root": "/home/docker_data_dir",        
+        "insecure-registries": [
+        "hub.paas",
+        "192.168.191.166",                           
+        ]
+}
+overlay2
+{
+        "storage-driver": "overlay2",
+        "storage-opts": "overlay2.override_kernel_check=true",
+        "log-driver": "journald",
+        "data-root": "/home/docker_data_dir",
+        "insecure-registries": [
+        "hub.paas",
+        "192.168.191.166"
+        ]
+}
+
+```
+
+```bash
+# 启动docker
+systemctl daemon-reload
+systemctl start docker
+```
+
+**1、安装harbor**
+
+```bash
+# 解压harbor压缩包并且进入harbor文件夹
+tar -zxvf harbor-offline-installer-v1.3.0-rc4.tgz && cd harbor
+# 修改harbor.cfg文件如下图
+vi harbor.cfg
+```
+
+修改harbor的配置文件
+
+```bash
+# 将docker-compose（二进制文件）放到宿主机上
+cp docker-compose /usr/local/bin/
+chmod +x /usr/local/bin/docker-compose
+#启动harbor
+./install.sh --with-clair
+# 安装成功之后，即可通过harbor镜像库的ip地址，通过游览器来访问.初始账号密码为：admin/Harbor12345
+```
+
+第二种方法参考：
 
 **1、安装docker-compose**
 
@@ -119,10 +257,13 @@ cd /usr/local/harbor/
 
 ---
 
-## 6、使用容器
+## 6、容器常用命令
 
-```shell
+### 6.1、操作命令
+
+```bash
 docker create debian:jessie		#创建容器但不启动
+docker restart start stop  容器ID		#重启 启动 关闭 创建的容器
 docker run -it debian:jessie /bin/bash		#运行容器,通过bash进入debian系统,退出容器后会关闭. 
 docker run -p 3306:3306 --name mysql -e MYSQL_ROOT_PASSWORD=123456 -d mysql	#启动mysql容器
 docker run --restart=always -itd centos:latest /bin/bash	#后台运行容器,加上--restart=always参数随宿主机一同启动，其他可选参数如下
@@ -150,11 +291,10 @@ docker run --restart=always -itd centos:latest /bin/bash	#后台运行容器,加
 	--name: 为容器指定一个名称；
 docker exec -it CONTAINER ID(容器的ID) /bin/bash		#进入正在运行中的容器
 docker attach		#进入正在运行的容器，例如：docker attach --sig-proxy=false mycon
-docker restart start stop  镜像名或容器ID		#重启 启动 关闭 容器
 docker rm 容器id		#删除容器
-docker kill		#发送信号给容器默认SIGKILL例如：docker kill -s KILL mycon (-s表示向容器发送一个信号)
+docker kill		#发送信号给容器默认SIGKILL例如：docker kill -s KILL mycon(-s表示向容器发送一个信号)一般用stop,只有容器停不了的情况下用
 docker wai		#阻塞到一个容器，直到容器停止运行。例如：docker wait mycon
-docker pause		#暂停容器中所有的进程。 例如：docker pause mycon
+docker pause		#暂停容器中所有的进程，当容器不需要继续工作但有不关闭就需要暂停容器。 例如：docker pause mycon
 docker unpause		#恢复容器中所有的进程。 例如：docker unpause mycon
 docker ps		#查看容器的状态
 	-a 列出所有容器 包含未运行的
@@ -176,6 +316,35 @@ docker top		#显示容器的进程信息，支持ps参数。例如docker top myc
 docker diff		#显示容器文件系统的前后变化， 检查容器里文件结构的更改。例如：docker diff mycon
 docker cp /www/test mycon:/www/		#将主机的/www/test目录拷贝到容器mycon的/www目录下
 docker cp mycon:/www /tmp/test		#将容器mycon中的/www目录拷贝到主机的/tmp/test目录中
+docker rename 原来容器名 新容器名	#更改容器名
+```
+
+### 6.2、组件命令
+
+docker提供了3个工具docker-Machine  、docker-Swarm 、docker-Compose，安装docker时默认不提供工具的。如果想要使用的时候需要安装。
+
+**docker-Machine**
+
+能够帮助我们在不同平台中快速安装和统一管理docker程序
+
+**docker-Swarm**
+
+能够帮助我们在管理集群中高效运行。
+
+**docker-Compose**
+
+属于应用层，能够帮助我们在集群中快速部署，管理多个容器组成的项目工具，可以根据负载情况随时扩展。
+
+在linux环境下安装环境要求，必须要先安装docker，docker内核版本不低于1.7.1
+
+[docker compose下载地址](<https://github.com/docker/compose/releases>)   安装方式如下：
+
+```bash
+curl -L https://github.com/docker/compose/releases/download/1.25.0-rc1/docker-compose-`uname -s`-`uname -m` -o /usr/local/bin/docker-compose		#下载docker-compose
+chmod +x /usr/local/bin/docker-compose		#下载完成后赋权，就可以了
+
+#卸载docker-compose
+rm /usr/local/bin/docker-compose
 ```
 
 ## 7、容器导出和导入
@@ -263,7 +432,9 @@ docker run -it --volumes-from myvolume -v $(pwd):/backup --rm centos tar -zxvf /
 
 [关于数据卷的备份和迁移可参考](https://blog.csdn.net/u013870094/article/details/79366542)：https://blog.csdn.net/u013870094/article/details/79366542
 
-## 9、网络访问
+## 9、网络介绍
+
+### 9.1、网络访问介绍
 
 在docker中程序访问外网的主机，可以通过docker0(网桥)转发到宿主机的外网网卡上，所以在容器中，我们可以直接访问宿主机能访问的网络。
 
@@ -304,9 +475,164 @@ docker run -d -p 80:80 --name myweb --link mysql:db nignx  #使用--link name:al
 docker exec -it myweb /bin/bash		#进入容器后可以使用 env 命令查看环境变量信息
 ```
 
+在容器间可进行连接的配置建立之后，可以在容器信息中发现相关条目。可通过 docker inspect 查看。
+
+容器间通信的主要目的并不是实现网络的访问，而是将网络间访问的方式更抽象化，由于宿主机的网络环境并不固定，所以就无法保障docker申请到的网段总是一致的，在这样的情况下，就需要修改容器中访问其他容器所使用的IP地址，但这样做可能就达不到docker快速部署的目的。docker可以通过修改hosts的方式实现一种即简单有无需修改IP地址的方案。使用docker连接其他容器时，docker会在/etc/hosts中添加一条基于容器名称或者别名的条目，这个解析指向正是被连接的容器。
+
+当我们需要在容器中使用被连接容器地址的时候，只使用容器的名称或设置的别名即可。这样就巧妙的利用了域名解析实现了变化的IP到固定的名称的转变。
+
+当我们创建容器并使用容器连接时，docker会在容器中做两件事，一是修改/etc/hosts文件，二是增加相关的环境变量。
+
+docker网络主要有 以下技术实现
+
+network namespace ：实现了网络资源的隔离，对隔离环境提供了网络设备，协议栈，路由表，防火墙，/proc/net目录，/sys/class/net目录，端口表等网络配置和实现。
+
+veth pair：实现了打穿隔离环境的网络传输数据通道，在docker中，他的一端连接到容器中虚拟的网卡上，另一端连接到宿主机中专用的网桥上，通过这种方式实现了docker容器外部网络的互通。
+
+linux bridge：放置在宿主机中的网桥，起到网络交换机的作用，因为容器网络通过veth pair连接到网桥上，所有他能够在容器间转发网络数据。
+
+iptables：用于提供网络数据透传，net等功能，也可以利用他实现docker网络的防火墙等网络安全防护的需求。
+
+通过docker network ls 命令可以查看当前docker中的网络列表，首次使用和安装docker时，docker会自动创建三个默认网络，
+
+```bash
+docker network ls  #通过命令查看会显示容器默认使用的网络。
+NETWORK ID          NAME                DRIVER              SCOPE
+8df1b44031a1        bridge              bridge              local
+59468096be67        host                host                local
+8bfdf04b64f2        none                null                local
+```
+
+默认情况下，==创建的容器都会连接到**bridge**这个网络上==，他对应的就是宿主机上的docker0网卡。一旦安装了docker，就可以看到宿主机上创建了docker0网卡。他扮演着网桥的角色。如果想改变容器中使用的网络可以在创建容器中使用 ==--network参数==。
+
+```bash
+docker run -it --name centos --network none centos:latest /bin/bash
+```
+
+**none 表示不使用网络**，容器如果绑定到none网络上，则不会为容器分配网络地址。
+
+**host 则是直接使用宿主机的网络环境**。
+
+### 9.2、自定义网络
+
+有时候，我们希望容器某些容器组成小型网络，不让其他容器访问到。就需要为这个容器单独分配网络。将这些容器放入到单独的网络之前，要先创建一个网络供容器连接。==--driver==参数用来指定网络所基于的网络驱动,也可以简写为-d
+
+```bash
+docker network create --driver bridge isolated #这样就创建了名为isolated的网络环境，可使用docker network ls查看
+```
+
+要使容器和外部通信都正常运行，最关键的就是要保证网络数据转发，也就是ip forward功能正常启动。docker deamon 启动时，我们可以通过 --ip-forward参数来控制docker是否使用ip forward (默认配置是开启的)。所以通常的情况下我们不需要对其专门设置。如果已经开启了对ip forward的支持，但容器仍然无法连接外部网络，可以先检查宿主机系统中的ip forward是否被禁用。然后在查看本机的防火墙。
+
+```bash
+[root@fan15 opt]# sysctl net.ipv4.conf.all.forwarding
+net.ipv4.conf.all.forwarding = 1		#启动时参数是1，如果是0时 表示ip forward处于禁用状态。
+```
+
+### 9.3、管理容器网络
+
+docker提供了4个管理网络的命令，分别如下：
+
+创建网络(docker network create)：
+
+```bash
+# --subnet 参数创建一个拥有指定子网范围的网络
+docker network create --subnet 192.168.100.1/24 cnet	#使用docker network ls 查看就可以看到创建了cnet网络
+```
+
+获取网络列表(docker network ls)，
+
+获取网络信息(docker network inspect)，
+
+删除网络(docker network rm)。
+
+以上都是介绍容器网络的操作，如果要让容器使用指定的网络，可以在创建容器时使用 --network 参数。或者随时通过(docker network connect)命令让容器连接到指定的网络
+
+```bash
+docker run -it --network cnet contos	#新创建容器的时候
+docker network connect cnet mysql		#将cnet网络连接到名为mysql的容器上，这样容器里就会存在2个网卡，一个bridge自动分配的网络和一个cnet网络
+docker network disconnect cnet mysql	#随时将容器的网络断开，就像拔掉网线一样。
+```
+
+### 9.4、配置docker0网桥
+
+配置docker0网桥的时候只能在docker启动前进行。
+
+```bash
+dockerd --bip=192.168.1.1/24	#设置docker0的IP地址
+dockerd --fixed-cidr=192.168.1.0/24		#设置docker0的网段
+dockerd --mtu=65536		#设置docker0的最大数据包长度
+
+brctl show		#查看容器和宿主机建立的连接
+```
+
+**自定义网桥**：通过brctl和ip命令，可以在宿主机上创建网桥和配置网桥
+
+```bash
+brctl addbr ymbr0
+ip addr add 192.168.99.1 dev ymbr0
+ip link set dev ymbr0 up
+ip addr show ymbr0		#查看刚刚创建的网桥信息
+
+#docker没有启动时，可以通过启动docker时加上 -b 或--bridge参考来指定网桥，如果docker已经启动，则需要先停止，然后在替换原有的docker0网桥
+dockerd --bridge ymbr0
+```
+
+**配置DNS**：在linux系统中与DNS解析相关的主要有3个配置文件，在etc目录下hostname(主机名，主要是在其他主机的网络发现时告知对方自身的名称) , hosts(用于本地域名解析，他的内容就是域名及对应的解析IP) , resolv.conf(提供DNS服务器的列表，当本地解析无效时，会向互联网请求解析时所连接的服务器地址)
+
+docker容器的文件系统是直接基于对应的基础镜像所建立的，这3个文件存在docker镜像中，我们可以在容器运行时使用mount 命令查看
+
+```bash
+[root@33f9a73a3f1a /]# mount
+overlay on / type overlay (rw,relatime,seclabel,lowerdir=/var/lib/docker/overlay2/l/3NBRROPZ6AUMF6JTRODTA3H667:/var/lib/docker/overlay2/l/FILL3DZP6TINVLBPUYTKSOYEFA,upperdir=/var/lib/docker/overlay2/a38bdc234f5606823feaca99948439de90c83870eeda19d53da1bced473242e0/diff,workdir=/var/lib/docker/overlay2/a38bdc234f5606823feaca99948439de90c83870eeda19d53da1bced473242e0/work)
+proc on /proc type proc (rw,nosuid,nodev,noexec,relatime)
+tmpfs on /dev type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+devpts on /dev/pts type devpts (rw,nosuid,noexec,relatime,seclabel,gid=5,mode=620,ptmxmode=666)
+sysfs on /sys type sysfs (ro,nosuid,nodev,noexec,relatime,seclabel)
+tmpfs on /sys/fs/cgroup type tmpfs (ro,nosuid,nodev,noexec,relatime,seclabel,mode=755)
+cgroup on /sys/fs/cgroup/systemd type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,xattr,release_agent=/usr/lib/systemd/systemd-cgroups-agent,name=systemd)
+cgroup on /sys/fs/cgroup/blkio type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,blkio)
+cgroup on /sys/fs/cgroup/cpu,cpuacct type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,cpuacct,cpu)
+cgroup on /sys/fs/cgroup/net_cls,net_prio type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,net_prio,net_cls)
+cgroup on /sys/fs/cgroup/devices type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,devices)
+cgroup on /sys/fs/cgroup/perf_event type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,perf_event)
+cgroup on /sys/fs/cgroup/hugetlb type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,hugetlb)
+cgroup on /sys/fs/cgroup/cpuset type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,cpuset)
+cgroup on /sys/fs/cgroup/pids type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,pids)
+cgroup on /sys/fs/cgroup/memory type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,memory)
+cgroup on /sys/fs/cgroup/freezer type cgroup (ro,nosuid,nodev,noexec,relatime,seclabel,freezer)
+mqueue on /dev/mqueue type mqueue (rw,nosuid,nodev,noexec,relatime,seclabel)
+# /dev/mapper/centos-root on /etc/resolv.conf type xfs (rw,relatime,seclabel,attr2,inode64,noquota)
+# /dev/mapper/centos-root on /etc/hostname type xfs (rw,relatime,seclabel,attr2,inode64,noquota)
+# /dev/mapper/centos-root on /etc/hosts type xfs (rw,relatime,seclabel,attr2,inode64,noquota)
+shm on /dev/shm type tmpfs (rw,nosuid,nodev,noexec,relatime,seclabel,size=65536k)
+devpts on /dev/console type devpts (rw,nosuid,noexec,relatime,seclabel,gid=5,mode=620,ptmxmode=666)
+proc on /proc/bus type proc (ro,relatime)
+proc on /proc/fs type proc (ro,relatime)
+proc on /proc/irq type proc (ro,relatime)
+proc on /proc/sys type proc (ro,relatime)
+proc on /proc/sysrq-trigger type proc (ro,relatime)
+tmpfs on /proc/asound type tmpfs (ro,relatime,seclabel)
+tmpfs on /proc/acpi type tmpfs (ro,relatime,seclabel)
+tmpfs on /proc/kcore type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+tmpfs on /proc/keys type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+tmpfs on /proc/timer_list type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+tmpfs on /proc/timer_stats type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+tmpfs on /proc/sched_debug type tmpfs (rw,nosuid,seclabel,size=65536k,mode=755)
+tmpfs on /proc/scsi type tmpfs (ro,relatime,seclabel)
+tmpfs on /sys/firmware type tmpfs (ro,relatime,seclabel)
+[root@33f9a73a3f1a /]# 可以看出这三个文件都是挂载的形式存在的
+```
+
+我们在创建容器时指定相关参数，可以对容器内的DNS相关内容进行配置。==通过-h或者--hostname参数==可以配置容器的主机名，这个配置对写到/etc/hostname里。==通过 --dns参数==可以指定新的DNS服务器，这个配置会写入/etc/resolv.cnf
+
+```bash
+docker run -it --name centos -h fan centos:latest /bin/bash		#更改容器的主机名
+docker run -it --name centos -h fan --dns 8.8.8.8 centos:latest /bin/bash	#指定DNS服务器
+```
+
 ## 10、dockerfile
 
-为了简化制作镜像的过程，方便在多台机器上共享镜像，docker提供了一种可以通过配置文件创建镜像的方式----使用dockerfile构建镜像，这种方式是将制作的镜像操作全部写入到一个文件中，然后docker build命令可以读取这个文件中的所有操作，并根据这些配置创建出相应的镜像。
+为了简化制作镜像的过程，方便在多台机器上共享镜像，docker提供了一种可以通过配置文件创建镜像的方式----使用dockerfile构建镜像，这种方式是将制作的镜像操作全部写入到一个文件中，然后 docker build 命令可以读取这个文件中的所有操作，并根据这些配置创建出相应的镜像。
 
 dockerfile中的内容主要以两种形式出现：注释行和指令行，以#开头的文本是注释行[^注意： 在dockerfile中，并非所有的以#开头的行都是注释行，有一类特殊的参数是通过#开头的行来指定的]，指令行主要分为两部分，行首是INSTRUCTION，即指令的名称，然后是arguments，即指令所接收的参数。指令是不区分大小写，但为了更清晰的分辨指令和参数，指令一般是大写。
 
@@ -344,15 +670,25 @@ CMD ["redis-server"]
 # 第一条指令from centos:7.2.1511 中的form指令，表示我们要构建镜像所基于的镜像，通常情况下我会使用一个系统镜像来构建我们的应用，接下来是linux的命令。表示我们构建镜像是所执行的操作。 
 # 因为有make命令，所以要安装   yum -y install gcc automake autoconf libtool make 
 # 想要查看ifconfig，所以安装net-tools     yum -y install net-tools
-#利用这个Dockerfile构建镜像命令：
-docker build -t centos/redis .	#执行命令后会自动查找dockerfile
+# 利用这个Dockerfile构建镜像命令：
+docker build -t centos/redis .	#执行命令后会自动查找当前目录下的dockerfile
+docker build -f dockerfile.redis -t redis:001 .	#加上-f指定配置文件，后面 . 是必须要加上的
 #启动容器： 
-docker run -d --name redis -p 6379:6379 centos/redis
+docker run -d --name redis -p 6379:6379 redis：001
 ```
 
-### 10.1、基础指令
+```dockerfile
+# 天翼云paas平台dockerfile
+FROM hub.paas/base/centos-jdk8-cn:latest
+ADD *.tar.gz /usr/local/gateway-service/
+RUN chmod u+x /usr/local/gateway-service/bin/run.sh
+EXPOSE 8888
+CMD '/usr/local/gateway-service/bin/run.sh'
+```
 
-**FROM指令**
+### 10.1、基础指令(FROM,MAINTAINER)
+
+**FROM指令**：指明基础镜像名称
 
 docker的镜像都是在bootfs层上实现的，但是我们不必每次构建镜像都是从bootfs层开始，我们可以直接在其他已经搭建好的镜像上进行修改，FROM指令就是用来指定我们所要构建的镜像是基于那个镜像建立的，==from指令必须作为第一条指令==，不过在一个dockerfile里是允许出现多个from指令的，以每个from指令为界限，都会生成不同的镜像。
 
@@ -365,9 +701,11 @@ FROM <image>@<digest>	#第三种
 # tag 和 digest 都是可选的，当不指定这两项时，docker会使用latest这个tag
 ```
 
-**MAINTAINER指令** ： 用于提供镜像的作者信息.
+**MAINTAINER指令** ： 用于提供镜像的作者信息，一般放在FROM命令下面。
 
-### 10.2、控制指令
+
+
+### 10.2、控制指令(RUN,WORKDIR,ONBUILD)
 
 控制指令是dockerfile的核心部分，我们可以通过控制指令来描述整个镜像的构建过程
 
@@ -376,8 +714,8 @@ FROM <image>@<digest>	#第三种
 RUN指令有两种使用格式
 
 ```dockerfile
-RUN command param1 param2	#如：RUN mkdir data 这种形式，在构建镜像时，实际上是以shell程序来执行操作的
-RUN ["executbale","param1","param2", ...]	#如：RUN ["/bin/bash","-c","echo hello"] 这种形式可以有效规避在某些基础镜像中没有shell程序，或者用于需要临时切换shell程序的时候
+RUN command param1 param2	#如：RUN mkdir data 这种形式，在构建镜像时，实际上是以shell(/bin/sh)程序来执行操作的，所以基础镜像必须有/bin/sh
+RUN ["executbale","param1","param2", ...]	#如：RUN ["/bin/bash","-c","echo hello"] 这种形式可以有效规避在某些基础镜像中没有shell程序，或者用于需要临时切换shell程序的时候,[]中的数据都会按照json字符串的格式解析，只能使用双引号，不能使用单引号或其他符号
 ```
 
 注意：[^ 在使用RUN指令时，docker排断是否采用缓存构建的依据，是给出的指令是否与生成缓存使用的指令一致，也就是说，本次执行的结果与缓存中不一致，会采用缓存中的数据，而不再执行命令，这可能导致不是我们想要的结果，比如使用RUN apt-get update 时都需要使用最新的结果，可以使用docker build 命令时加上 --no-cache参数的方式解决这个问题]
@@ -403,7 +741,7 @@ ONBUILD INSTRUCTION arguments	#把我们需要执行的指令放在ONBUILD指令
 
 ONBUILD指令，在生成镜像时会写入到镜像的特征列表中，可以使用docker inspect命令看到镜像的构建命令，当子镜像构建完成后，这些指令也都随着消失了。它不会在继承到新构建的镜像中。
 
-### 10.3、引入指令
+### 10.3、引入指令(ADD,COPY)
 
 很多场合下，我们希望将文件加入到即将构建的镜像中，引入指令就可以帮我们实现这个目的。
 
@@ -427,17 +765,17 @@ COPY <src> ... <dest>	# 第一种方式copy 原路径<src>、目标路径<dest>
 COPY ["<src>", ... "<dest>"]	#与add指令的规则几乎是一样的。主要区别就是不能识别网址和自动解压。不需要解压的文件可以使用这个指令
 ```
 
-### 10.3、执行指令
+### 10.3、执行指令(CMD)
 
 执行指令能够通过镜像建立容器时，容器默认执行的命令，我们通常使用这些命令启动镜像中的主要程序
 
-**CMD指令**：docker容器是为运行单独的应用程序而设计的，当docker容器启动时，实际上是对程序的启动。而在dockerfile中，就可以通过CMD指令来创建镜像容器中的主体程序。
+**CMD指令**：docker容器是为运行单独的应用程序而设计的，当docker容器启动时，实际上是对程序的启动。而在dockerfile中，就可以通过CMD指令来创建镜像容器中的主体程序。可以出现多次CMD指令，但只要最后一次CMD命令生效。
 
 CMD指令有三种使用格式
 
 ```dockerfile
-CMD command param1 param2 ...	#第一种方法：
-CMD ["executable","param1","param2" ...]	#和上面的方法类似，都是取决于是否使用shell程序来执行命令
+CMD command param1 param2 ...	#第一种方法：依靠shell命令来执行
+CMD ["executable","param1","param2" ...]	#和上面的方法类似，都是取决于是否使用shell程序来执行命令(推荐)
 CMD ["param1","param2" ...]		#这种格式 是将参数传给ENTRYPOINT指令
 # 需要注意：容器中只会绑定一个应用程序，所以在dockerfile中只能存在一个CMD指令，如果我们填写多个CMD指令，会覆盖掉之前的指令。
 ```
@@ -453,7 +791,7 @@ ENTRYPOINT command param1 param2 ...	# 使用shell程序来执行。 这两种�
 
 需要注意：当ENTRYPOINT指令被指定时，所有的CMD指令或者通过docker run 等方式的应用程序启动命令，不会在容器启动时执行。而是把这些命令当成参数。所以我们在使用 ENTRYPOINT 时需要特别注意使用的方法。我们应该在避免在使用 ENTRYPOINT指令 时把 CMD指令的形式配置成shell格式，（即：CMD command param ... ）因为这样做，在 ENTRYPOINT 里是以次级命令的方式启动 CMD的shell进程。docker 就不会把容器的生命周期绑定到进程上。可能会造成意想不到的结果。
 
-### 10.4、配置指令
+### 10.4、配置指令(EXPOSE,ENV)
 
 若想对镜像或者通过镜像所创建的容器进行相关的环境或者网络 等配置时，可以通过配置指令来实现。
 
@@ -479,7 +817,7 @@ ENV <key>=<value>		#这种格式能够一次指定多个环境变量，并且可
 LABEL指令的用法
 
 ```dockerfile
-LABEL version="1.0"	#在LABEL指令之后，带入我们希望加入的元数据的键值对，如果有多个键值对，可以使用空格分隔他们，在键和值中，如果带有空格，可以使用引号，如果数据过长可以使用 \ 进行换行
+LABEL version="1.0"	#在LABEL指令之后，带入我们希望加入的元数据的键值对，如果有多个键值对，可以使用空格分隔他们如下，在键和值中，如果带有空格，可以使用引号，如果数据过长可以使用 \ 进行换行
 LABEL "multi.labell"="value" "com.example.vendor"="You Ming" #推荐把所以的标记写到一个LABEL指令中
 ```
 
@@ -494,9 +832,790 @@ USER nginx
 使用ARG的方式
 
 ```dockerfile
-ARG <name>	#
-ARG <name>=<default>	#
+ARG <name>	#使用这样的形式定义的格式，变量的值是有外部传递过来
+ARG <name>=<default>	#这样形式定义的格式，表示我们未提供变量时就使用默认值
 ```
+
+用法展示
+
+```dockerfile
+FROM busybox
+ARG user
+USER $user
+# 上面是示例，当我们真正构建镜像时，使用 --build-arg参数赋值
+docker build --build-arg user=root ./busybox
+```
+
+**STOPSIGNAL指令**：当我们停止容器时，docker会向容器中的应用程序传递停止信号，我们可以通过STOPSIGNAL指令修改docker所传递的信号
+
+定义的格式
+
+```dockerfile
+STOPSIGNAL 9	#linux内核syscall信号的数字表示
+STOPSIGANL SIGKILL	#信号的名称表示
+```
+
+**SHELL指令**：CMD ENTRYPOINT等指令都是支持以shell形式执行，SHELL指令可以为他们选定shell程序，
+
+SHELL指令的使用格式
+
+```dockerfile
+SHELL ["executable","parameters"]	#使用方法
+SHELL ["/bin/bash","-c"]	#shell默认使用的是/bin/sh 若要改为/bin/bash，可以使用这个指令
+```
+
+### 10.5、特殊用法
+
+除了基本的指令和备注信息，docker中，我们还可以通过一些特殊的使用方法，控制镜像的构建过程。
+
+**环境变量**：通过ENV指令定义环境变量后，就可以在之后的命令中进行环境变量的替换了，环境变量的解析支持 ADD，COPY，ENV，EXPOSE，LABEL，USER，WORKDIR，VOLUME，STOPSIGNAL 这些指令，
+
+普通的环境变量替换方法是使用 “$+变量名”的方式
+
+```dockerfile
+ENV variable value
+RUN echo $variable	# value
+# 也可以使用花括号将变量名包裹起来，
+ENV variable value
+RUN echo $variable	#value
+RUN echo ${variable}_1	#value
+# 如果使用的变量 刚好是我们想要使用的内容，可以使用转义符号去除环境变量的解析过程
+ENV variable value
+RUN echo \$variable 
+```
+
+**指令解析**：使用RUN 等指令时，可以通过 \ 来进行命令的换行。但在Windows系统中，目录的分隔符就是 \ 要解决这个问题，就要利用dockerfile中注释的一种特殊用法：解析指令行
+
+解析指令行的一般用法是 ``` # directive = value ```	<!-- 参数名和值分布在登号的两端，参数名是区分大小写，并且参数名与值周围的空格也会被忽略掉。
+
+### 10.6、使用dockerfile构建镜像
+
+使用dockerfile创建apache镜像
+
+```dockerfile
+#apache server
+FROM centos:latest
+RUN yum update -y && \
+    yum install vim -y && \
+    yum install httpd -y && \
+    yum install net-tools -y && \
+    yum clean all
+
+RUN sed -i 's/#ServerName www.example.com/ServerName localhost/g' /etc/httpd/conf/httpd.conf
+
+EXPOSE 80
+
+CMD ["/usr/sbin/httpd","-D","FOREGOUND"]
+# 构建镜像，执行命令如下
+docker build -f dockerfile.apache -t apache:v1 .
+```
+
+使用dockerfile 构建nginx镜像
+
+```dockerfile
+#nginx1.15.12
+
+FROM centos:latest
+ADD *.tar.gz /opt/
+
+RUN yum update -y && \
+    yum install vim -y && \
+    yum install net-tools -y && \
+    yum install gcc gcc-c++ -y && \
+    cd /opt/zlib-1.2.11 && ./configure && make && make install && \
+    cd /opt/pcre-8.43 && ./configure && make && make install && \
+    cd /opt/openssl-1.1.1b && ./config && make && make install && \
+    cd /opt/nginx-1.15.12 && ./configure --with-http_ssl_module --with-http_flv_module --with-http_mp4_module --with-http_realip_module --with-http_stub_status_modul
+e --with-http_gzip_static_module --with-openssl=/opt/tools/openssl-1.0.2d --with-pcre=/opt/tools/pcre-8.36 --with-zlib=/opt/tools/zlib-1.2.8 --with-pcre && \
+    make && make install
+
+EXPOSE 80 443
+
+CMD ["nginx","-g","doemon off;"]
+```
+
+使用dockerfile 构建tomcat镜像
+
+```dockerfile
+# tomcat server
+
+FROM java:8-jre
+RUN apt-get update && apt-get install -y tomcat8
+EXPOSE 8080
+CMD ["/usr/share/tomcat8/bin/catalina.sh","run"]
+```
+
+使用dockerfile 构建mysql镜像
+
+使用dockerfile 构建MongoDB镜像
+
+使用dockerfile 构建redis镜像
+
+```dockerfile
+# redis
+
+FROM debian:jessie
+
+RUN apt-get update \
+    && bulidDeps='gcc make libc6-dev wget' \
+    && apt-get install -y --no-install-recommends $buildDeps \
+    && wget -O redis.tgz "http://download.redis.io/releases/redis-3.2.3.tar.gz" \
+    && make -p /usr/src/redis \
+    && tar -zxf redis.tgz -C /usr/src/redis --strip-components=1 \
+    && rm redis.tgz \
+    && cd /usr/src/redis \
+    && make \
+    && make install \
+    && cd / \
+    && rm -rf /usr/src/redis \
+    && apt-get purge -y --auto-remove $buildDeps
+EXPOSE 6379
+CMD ["redis-server"]
+```
+
+使用dockerfile 构建java镜像
+
+```dockerfile
+FROM debian:jessie
+RUN echo 'deb http://httpredir.debian.org/debian jessie-backports main' > /etc/apt/sources.list.d/jessie-backports.list \
+    && apt-get update \
+    && apt-get install -y openjdk-8-jre \
+    && rm -rf /var/lib/apt/lists/*
+CMD ["java","-version"]
+```
+
+## 11、docker资源限制
+
+==限制容器分配最大内存==，在创建容器时加上参数 -m 或 --memory参数。
+
+```dockerfile
+docker run -d -m 512M nginx:latest		#现在物理内存
+docker run -d -m 512M --memory-swap 1024M nginx:latest	#加上--memory-swap参数可以控制交换区内存的大小。
+```
+
+在docker里，没有直接使用具体的参数配置而是==通过权重来分配CPU==，使用-c或者--cpu-shares参数，设置CPU占用的权重，不能对CPU资源硬性限制。
+
+```bash
+docker run -d -c 500 nginx:latest	#设置资源占用权重，只是限制实际允许个容器对CPU资源的需求。
+```
+
+对于硬盘，可以通过--device-read-bps和--device-write-bps命令限制指定硬盘的读写速度，还有--device-read-iops和--device-write-iops限制IO
+
+```bash
+
+```
+
+创建容器时加上 --ulimit 参数来配置ulimit,可以修改core dump文件大小，数据段大小，文件句柄数，进程栈深度，CPU时间，单一用户进程数，进程虚拟内存等，
+
+```bash
+docker run -d --name nginx --ulimit cpu=1000 nginx:latest
+docker exec -it nginx /bin/bash		#然后进入容器查看
+#执行命令 ulimit -t
+docker dockerd --default-ilimit cpu=1000		#这样配置容器默认的Ulimit限制。
+```
+
+```dockerfile
+docker stats --no-stream centos	#查看容器占用的资源，可以显示CPU,内存，IO，进程数量等情况。类似top命令
+```
+
+# 第二章：docker实践
+
+## 1、在docker中使用SSH服务
+
+ssh服务作为远程操作服务主机的主要方式之一，在docker中，我们也可以通过ssh连接和访问到容器的内部。
+
+```dockerfile
+service sshd start	#首先启动ssh
+```
+
+**使用ssh服务容器**
+
+
+
+**构建ssh服务镜像**
+
+```dockerfile
+# ssh server
+# VERSION 0.0.1
+FROM ubuntu:16.0.4
+MAINTAINER fana
+RUN apt-get update && apt-get install -y openssh-server
+RUN mkdir /var/run/sshd
+RUN echo 'root:hellossh' | chpasswd
+RUN sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+```
+
+## 2、练习
+
+本次实践的目标是搭建一个完整的web服务器，我们采用 nginx + memcached + mysql + PHP的架构，以上镜像我们从docker hup上获取。
+
+**1、启动容器**
+
+```bash
+docker run -d --name memcached memcached:latest	#启动memcached
+docker run -d --name mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=123456 mysql:latest	#启动mysql，并设置密码123456
+# 启动PHP 代码挂载目录时/app,需要让PHP连接到mysql和memcached
+docker run -d --name php -v /app:/app --link mysql --link memcached php:latest /bin/bash
+# 启动nginx
+docker run -d --name nginx -v /app/nginx/nginx.conf:/etc/nginx/nginx.conf -v /app:/app --link php -p 80:80 nginx:latest /bin/bash
+
+```
+
+
+
+**2、程序配置**
+
+等程序配置完成后，就可以做基本的测试了
+
+
+
+
+
+## 3、docker运维技巧
+
+
+
+
+
+# 第三章 kubernetes基础
+
+## 1、CentOS上搭建Kubernetes集群
+
+练习环境：
+
+**1.安装net-tools**
+
+```bash
+[root@localhost ~]# yum install -y net-tools
+```
+
+**2.关闭firewalld**
+
+```bash
+[root@localhost ~]# systemctl stop firewalld && systemctl disable firewalld
+Removed symlink /etc/systemd/system/multi-user.target.wants/firewalld.service.
+Removed symlink /etc/systemd/system/dbus-org.fedoraproject.FirewallD1.service.
+[root@localhost ~]# setenforce 0
+[root@localhost ~]# sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+```
+
+### 1、安装Docker
+
+如今Docker分为了Docker-CE和Docker-EE两个版本，CE为社区版即免费版，EE为企业版即商业版。我们选择使用CE版。
+
+**1.安装yum源工具包**
+
+```bash
+[root@localhost ~]# yum install -y yum-utils device-mapper-persistent-data lvm2
+```
+
+**2.下载docker-ce官方的yum源配置文件**
+
+```bash
+[root@localhost ~]# yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+```
+
+**3.禁用docker-c-edge源配edge是不开发版，不稳定，下载stable版**
+
+```bash
+yum-config-manager --disable docker-ce-edge
+```
+
+**4.更新本地YUM源缓存**
+
+```bash
+yum makecache fast
+```
+
+**5.安装Docker-ce相应版本的**
+
+```bash
+yum -y install docker-ce
+```
+
+**6.运行hello world**
+
+```bash
+[root@localhost ~]# systemctl start docker
+[root@localhost ~]# docker run hello-world
+Unable to find image 'hello-world:latest' locally
+latest: Pulling from library/hello-world
+9a0669468bf7: Pull complete
+Digest: sha256:0e06ef5e1945a718b02a8c319e15bae44f47039005530bc617a5d071190ed3fc
+Status: Downloaded newer image for hello-world:latest
+
+Hello from Docker!
+This message shows that your installation appears to be working correctly.
+
+To generate this message, Docker took the following steps:
+1. The Docker client contacted the Docker daemon.
+2. The Docker daemon pulled the "hello-world" image from the Docker Hub.
+3. The Docker daemon created a new container from that image which runs the
+   executable that produces the output you are currently reading.
+4. The Docker daemon streamed that output to the Docker client, which sent it
+   to your terminal.
+
+To try something more ambitious, you can run an Ubuntu container with:
+$ docker run -it ubuntu bash
+
+Share images, automate workflows, and more with a free Docker ID:
+https://cloud.docker.com/
+
+For more examples and ideas, visit:
+https://docs.docker.com/engine/userguide/
+```
+
+### 2、安装kubelet与kubeadm包
+
+使用kubeadm init命令初始化集群之下载Docker镜像到所有主机的实始化时会下载kubeadm必要的依赖镜像，同时安装etcd,kube-dns,kube-proxy,由于我们GFW防火墙问题我们不能直接访问，因此先通过其它方法下载下面列表中的镜像，然后导入到系统中，再使用kubeadm init来初始化集群
+
+**1.使用DaoCloud加速器(可以跳过这一步)**
+
+```bash
+[root@localhost ~]# curl -sSL https://get.daocloud.io/daotools/set_mirror.sh | sh -s http://0d236e3f.m.daocloud.io
+docker version >= 1.12
+{"registry-mirrors": ["http://0d236e3f.m.daocloud.io"]}
+Success.
+You need to restart docker to take effect: sudo systemctl restart docker
+[root@localhost ~]# systemctl restart docker
+```
+
+**2.下载镜像,自己通过Dockerfile到dockerhub生成对镜像,也可以克隆我的**
+
+```bash
+images=(kube-controller-manager-amd64 etcd-amd64 k8s-dns-sidecar-amd64 kube-proxy-amd64 kube-apiserver-amd64 kube-scheduler-amd64 pause-amd64 k8s-dns-dnsmasq-nanny-amd64 k8s-dns-kube-dns-amd64)
+for imageName in ${images[@]} ; do
+ docker pull champly/$imageName
+ docker tag champly/$imageName gcr.io/google_containers/$imageName
+ docker rmi champly/$imageName
+done
+```
+
+**3.修改版本**
+
+```bash
+docker tag gcr.io/google_containers/etcd-amd64 gcr.io/google_containers/etcd-amd64:3.0.17 && \
+docker rmi gcr.io/google_containers/etcd-amd64 && \
+docker tag gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64 gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64:1.14.5 && \
+docker rmi gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64 && \
+docker tag gcr.io/google_containers/k8s-dns-kube-dns-amd64 gcr.io/google_containers/k8s-dns-kube-dns-amd64:1.14.5 && \
+docker rmi gcr.io/google_containers/k8s-dns-kube-dns-amd64 && \
+docker tag gcr.io/google_containers/k8s-dns-sidecar-amd64 gcr.io/google_containers/k8s-dns-sidecar-amd64:1.14.2 && \
+docker rmi gcr.io/google_containers/k8s-dns-sidecar-amd64 && \
+docker tag gcr.io/google_containers/kube-apiserver-amd64 gcr.io/google_containers/kube-apiserver-amd64:v1.7.5 && \
+docker rmi gcr.io/google_containers/kube-apiserver-amd64 && \
+docker tag gcr.io/google_containers/kube-controller-manager-amd64 gcr.io/google_containers/kube-controller-manager-amd64:v1.7.5 && \
+docker rmi gcr.io/google_containers/kube-controller-manager-amd64 && \
+docker tag gcr.io/google_containers/kube-proxy-amd64 gcr.io/google_containers/kube-proxy-amd64:v1.6.0 && \
+docker rmi gcr.io/google_containers/kube-proxy-amd64 && \
+docker tag gcr.io/google_containers/kube-scheduler-amd64 gcr.io/google_containers/kube-scheduler-amd64:v1.7.5 && \
+docker rmi gcr.io/google_containers/kube-scheduler-amd64 && \
+docker tag gcr.io/google_containers/pause-amd64 gcr.io/google_containers/pause-amd64:3.0 && \
+docker rmi gcr.io/google_containers/pause-amd64
+```
+
+**4.添加阿里源**
+
+```bash
+[root@localhost ~]#  cat >> /etc/yum.repos.d/kubernetes.repo << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+enabled=1
+gpgcheck=0
+EOF
+```
+
+**5.查看kubectl kubelet kubeadm kubernetes-cni列表**
+
+```bash
+[root@localhost ~]# yum list kubectl kubelet kubeadm kubernetes-cni
+已加载插件：fastestmirror
+Loading mirror speeds from cached hostfile
+* base: mirrors.tuna.tsinghua.edu.cn
+* extras: mirrors.sohu.com
+* updates: mirrors.sohu.com
+可安装的软件包
+kubeadm.x86_64                                                     1.7.5-0                                              kubernetes
+kubectl.x86_64                                                     1.7.5-0                                              kubernetes
+kubelet.x86_64                                                     1.7.5-0                                              kubernetes
+kubernetes-cni.x86_64                                              0.5.1-0                                              kubernetes
+[root@localhost ~]#
+```
+
+**6.安装kubectl kubelet kubeadm kubernetes-cni**
+
+```bash
+[root@localhost ~]# yum install -y kubectl kubelet kubeadm kubernetes-cni
+```
+
+### 3、修改cgroups
+
+```bash
+vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+```
+
+update KUBELET_CGROUP_ARGS=--cgroup-driver=systemd to KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs
+
+修改kubelet中的cAdvisor监控的端口，默认为0改为4194，这样就可以通过浏器查看kubelet的监控cAdvisor的web页
+
+```bash
+[root@kub-master ~]# vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+```
+
+ <!--Environment="KUBELET_CADVISOR_ARGS=--cadvisor-port=4194"--> 
+
+**启动所有主机上的kubelet服务**
+
+```bash
+[root@master ~]# systemctl enable kubelet && systemctl start kubelet
+```
+
+**初始化master master节点上操作**
+
+```bash
+[root@master ~]# kubeadm reset && kubeadm init --apiserver-advertise-address=192.168.0.100 --kubernetes-version=v1.7.5 --pod-network-cidr=10.200.0.0/16
+[preflight] Running pre-flight checks
+[reset] Stopping the kubelet service
+[reset] Unmounting mounted directories in "/var/lib/kubelet"
+[reset] Removing kubernetes-managed containers
+[reset] Deleting contents of stateful directories: [/var/lib/kubelet /etc/cni/net.d /var/lib/dockershim /var/lib/etcd]
+[reset] Deleting contents of config directories: [/etc/kubernetes/manifests /etc/kubernetes/pki]
+[reset] Deleting files: [/etc/kubernetes/admin.conf /etc/kubernetes/kubelet.conf /etc/kubernetes/controller-manager.conf /etc/kubernetes/scheduler.conf]
+[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+[init] Using Kubernetes version: v1.7.5
+[init] Using Authorization modes: [Node RBAC]
+[preflight] Running pre-flight checks
+[preflight] WARNING: docker version is greater than the most recently validated version. Docker version: 17.09.0-ce. Max validated version: 1.12
+[preflight] Starting the kubelet service
+[kubeadm] WARNING: starting in 1.8, tokens expire after 24 hours by default (if you require a non-expiring token use --token-ttl 0)
+[certificates] Generated CA certificate and key.
+[certificates] Generated API server certificate and key.
+[certificates] API Server serving cert is signed for DNS names [master kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 192.168.0.100]
+[certificates] Generated API server kubelet client certificate and key.
+[certificates] Generated service account token signing key and public key.
+[certificates] Generated front-proxy CA certificate and key.
+[certificates] Generated front-proxy client certificate and key.
+[certificates] Valid certificates and keys now exist in "/etc/kubernetes/pki"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/admin.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/controller-manager.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/scheduler.conf"
+[apiclient] Created API client, waiting for the control plane to become ready
+[apiclient] All control plane components are healthy after 34.002949 seconds
+[token] Using token: 0696ed.7cd261f787453bd9
+[apiconfig] Created RBAC rules
+[addons] Applied essential addon: kube-proxy
+[addons] Applied essential addon: kube-dns
+
+Your Kubernetes master has initialized successfully!
+
+To start using your cluster, you need to run (as a regular user):
+
+ mkdir -p $HOME/.kube
+ sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+ sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+ http://kubernetes.io/docs/admin/addons/
+
+You can now join any number of machines by running the following on each node
+as root:
+
+ kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443
+
+[root@master ~]#
+```
+
+kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443 这个一定要记住,以后无法重现，添加节点需要
+
+### 4、添加节点
+
+```bash
+[root@node1 ~]# kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443
+[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+[preflight] Running pre-flight checks
+[preflight] WARNING: docker version is greater than the most recently validated version. Docker version: 17.09.0-ce. Max validated version: 1.12
+[preflight] WARNING: kubelet service is not enabled, please run 'systemctl enable kubelet.service'
+[preflight] Starting the kubelet service
+[discovery] Trying to connect to API Server "192.168.0.100:6443"
+[discovery] Created cluster-info discovery client, requesting info from "https://192.168.0.100:6443"
+[discovery] Cluster info signature and contents are valid, will use API Server "https://192.168.0.100:6443"
+[discovery] Successfully established connection with API Server "192.168.0.100:6443"
+[bootstrap] Detected server version: v1.7.10
+[bootstrap] The server supports the Certificates API (certificates.k8s.io/v1beta1)
+[csr] Created API client to obtain unique certificate for this node, generating keys and certificate signing request
+[csr] Received signed certificate from the API server, generating KubeConfig...
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+
+Node join complete:
+* Certificate signing request sent to master and response
+ received.
+* Kubelet informed of new secure connection details.
+
+Run 'kubectl get nodes' on the master to see this machine join.
+```
+
+**在master配置kubectl的kubeconfig文件**
+
+```bash
+[root@master ~]# mkdir -p $HOME/.kube
+[root@master ~]# cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+[root@master ~]# chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+**在Master上安装flannel**
+
+```bash
+docker pull quay.io/coreos/flannel:v0.8.0-amd64
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.8.0/Documentation/kube-flannel.yml
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.8.0/Documentation/kube-flannel-rbac.yml
+```
+
+### 5、查看集群
+
+```bash
+[root@master ~]# kubectl get cs
+NAME                 STATUS    MESSAGE              ERROR
+scheduler            Healthy   ok
+controller-manager   Healthy   ok
+etcd-0               Healthy   {"health": "true"}
+[root@master ~]# kubectl get nodes
+NAME      STATUS     AGE       VERSION
+master    Ready      24m       v1.7.5
+node1     NotReady   45s       v1.7.5
+node2     NotReady   7s        v1.7.5
+[root@master ~]# kubectl get pods --all-namespaces
+NAMESPACE     NAME                             READY     STATUS              RESTARTS   AGE
+kube-system   etcd-master                      1/1       Running             0          24m
+kube-system   kube-apiserver-master            1/1       Running             0          24m
+kube-system   kube-controller-manager-master   1/1       Running             0          24m
+kube-system   kube-dns-2425271678-h48rw        0/3       ImagePullBackOff    0          25m
+kube-system   kube-flannel-ds-28n3w            1/2       CrashLoopBackOff    13         24m
+kube-system   kube-flannel-ds-ndspr            0/2       ContainerCreating   0          41s
+kube-system   kube-flannel-ds-zvx9j            0/2       ContainerCreating   0          1m
+kube-system   kube-proxy-qxxzr                 0/1       ImagePullBackOff    0          41s
+kube-system   kube-proxy-shkmx                 0/1       ImagePullBackOff    0          25m
+kube-system   kube-proxy-vtk52                 0/1       ContainerCreating   0          1m
+kube-system   kube-scheduler-master            1/1       Running             0          24m
+[root@master ~]#
+```
+
+如果出现：The connection to the server localhost:8080 was refused - did you specify the right host or port?
+
+解决办法： 为了使用kubectl访问apiserver，在~/.bash_profile中追加下面的环境变量： export KUBECONFIG=/etc/kubernetes/admin.conf source ~/.bash_profile 重新初始化kubectl
+
+---
+
+**单机版的kubernetes环境**
+
+```bash
+systemctl disable firewalld	#禁止开机自启动
+systemctl stop firewalld		#停止防火墙
+yum install -y etcd kubernetes		#yum安装
+
+# 服务的启动程序
+systemctl start etcd
+systemctl start docker
+systemctl start kube-apiserver
+systemctl start kube-controller-manager
+systemctl start kube-scheduler
+systemctl start kubelet
+systemctl start kube-proxy
+```
+
+## 2、kubectl命令行
+
+```bash
+kubectl create -f myweb-rc.yaml	#通过RC文件，创建tomcat容器
+kubectl get pods	#查看pod实例
+kubectel get services	#查看创建的容器服务
+kubectl get nodes	#查看集群中有多少node
+kubectl describe node (node_name)	#查看某个node的详细信息
+```
+
+**tomcat应用yml文件**
+
+```yaml
+apiVersion:v1
+kind:ReplicationController
+metadata:
+  name:myweb
+spec:
+  replicas:2
+  selector:
+    app:myweb
+  template:
+    metadata:
+      labels:
+        app:myweb
+    spec:
+      containers:
+      - name:myweb
+        image:kubeguide/tomcat-app:v1
+        ports:
+        - containerPort:8080
+```
+
+
+
+## 3、kubernetes基本概念
+
+kubernetes中 node pod service等都可以看作一种资源对象，几乎所有的资源对象都可以通过kubectl工具执行增删改查等操作。并将其保存在etcd中持久化存储。
+
+**kubernetes集群的二种管理角色：master和node**
+
+**==Master 	是指集群的控制节点==**  每个集群都需要一个master节点来负责整个集群的管理和控制，基本上kubernetes的所有控制命令都会发给他，他来负责具体的执行过程，一般执行命令都是在master节点上执行的，master节点要占用一个独立的服务器(高可用部署建议用3台机器)。如果master宕机或者不可用，集群内的容器都会失效。
+
+**Master节点上运行着以下关键进程：**
+
+kubernetes API server :(kube-apiserver) 提供了http rest接口的关键服务进程，是kubernetes里所有资源的增删改查等操作的唯一接口。
+
+kubernetes Controller Manager: (kube-controller-manager) 所有资源对象的自动化控制中心，可以理解为资源对象的 大总管。
+
+Kubernetes Scheduler :(kube-scheduler) 负责资源调度（pod调度）的进程，相当于公交公司的调度室。
+
+master节点上还需要启动一个etcd服务，所有的资源对象的数据都报错在etcd中。
+
+**==Node  集群中的机器都成为node节点==** 是kubernetes集群中的工作负载节点。每个node都会被master分配一些docker容器，当某个node宕机后，其他的docker容器会迁移到其他node节点上。
+
+**Node节点上运行着以下关键进程**
+
+kubelet:负责pod的创建，启动 暂停等任务。
+
+kube-proxy：实现与kubernetes service的通讯，和负载均衡机制的重要组件。
+
+docker engine: docker引擎，负责本机的容器创建和管理工作。
+
+**==Pod==** 每个pod都有一个特殊的pause容器和一个或多个相关的用户业务容器。pod有二种类型：普通的pod和静态pod（比较特殊，他不存放在etcd存储里，而是放在某个node上的一个具体文件中，并且只在此node上运行。）普通的pod一旦被创建就会放在etcd中存储，随后会被Master调度到某个的node上进行绑定，然后该pod被kubelet进程实例化成一组相关的docker容器，并启动起来。
+
+**==Label==** 是一个用户自定义的key=value的键值对，可以使用到各种资源对象上，（node,pod,service,RC等）
+
+**==Replication Controller==** 简称RC，定义了一个期望的场景，即声明某种pod的副本数量在任意时刻都符合某个预期值，s所有RC的定义包括以下几个部分
+
+pod的数量（replicas），用于筛选目标pod的label selector , 当pod的副本数量小于预期数量时，用于创建新pod的pod模板。
+
+下面是一个完整的RC定义例子,
+
+```dockerfile
+apiVersion:v1
+kind:ReplicationController
+metadata:
+  name:frontend
+spec:
+  replicas:1
+  selector:
+    tier:frontend
+  template:
+    metadata:
+      labels:
+        app:app-demo
+        tier:frontend
+    spec:
+      containers:
+      - name:tomcat-demo
+        image:tomcat
+        imagePullPolicy:IfNotPresent
+        env:
+        - name:GET_HOSTS_FROM
+          value:dns
+        ports:
+        - containerPort:80
+```
+
+当我们吧RC提交到kubernetes集群后，master上的Controller Manager会定期巡检当前存活的pod，并保障pod实例数等于RC的期望值。在运行时我们可以通过修RC，来实现对pod实例数的修改 kubectl scale rc redis-slave --replicas=3 ，
+
+新版的kubernetes出现了replica set,可以称为下一次的RC，和Replication Controller区别是支持基于集合的Lable selector，而Replication Controller只支持等式的Lable Selector，但他主要被Deployment这个资源对象所使用，从而形成一套pod创建，删除 更新的编排机制。
+
+**==Deployment==** 相当于RC的一次升级，为了更好的解决pod的编排问题。在内部是使用了replica set来实现的。他的定义和Replica Set的定义很类似。示例如下
+
+```dockerfile
+apiVersion: extensions/vlbetal
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+  matchLabels:
+    tier: frontend
+  matchExpressions:
+    - {key: tier, operator: In, values: [frontend]}
+template:
+  metadata:
+    labels:
+      app: app-demo
+      tier: frontend
+  spec:
+    containers:
+    - name: tomcat-demo
+      image: tomcat
+      imagePullPolicy: IfNotPresent
+      ports:
+      - containerPort: 8080
+      
+# 运行下面命令创建Deployment
+kubectl create -f tomcat-deployment.yaml
+kubectl get deployments		#查看deployment的信息
+#显示内容解释：DESIRED:pod数量的期望值，CURRENT:当前replica的值，UP-TO-DATA：最新版本的pod数量，AVAILBLE:集群中存活的pod数量
+kubectl get rs	#查看replica set信息
+kubectl describe deployments	#可以看到deployment控制pod的水平扩展过程。
+```
+
+**==Horizontal Pod Autoscaler==** pod只能扩容简称HPA，通过追踪分析RC控制的所有pod的负载变化情况，来确定是否需要针对性的调整目标的pod数量。有二种方式作为pod负载的度量指标，CPUUtilizationPercentage和应用程序自定义的度量指标，比如服务在每秒的请求数(TPS或QPS)。
+
+```bash
+kubectl autoscale deployment php-apache --cpu-percent=90 --min=1 --max=10	#除了yaml文件定义外，通过命令创建HPA资源对象
+```
+
+**==StatefulSet==**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 第四章 kubernetes高阶实践
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
