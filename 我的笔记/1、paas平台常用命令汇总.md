@@ -38,6 +38,13 @@ kubectl delete pod -n te-acct acct-biz-bill-6778b46dd4-x9dgr
 kubectl get pod -n te-pyz-app		#查看pod信息
 kubectl get rs -n te-pyz-app		#查看资源
 kubectl delete rs -n te-pyz-app 容器名		#删除资源pod
+kubectl get pod -o wide --all-namespaces | grep 10.145.167.82	#查看某个node节点上的pod
+
+get pod -o wide --all-namespaces |grep -vi Running	# 查看不是状态为running 的pod
+kubectl exec -it -n prod-msc-app msc-biz-wxboundinfopush-7c76cb78d4-fwkvm /bin/bash	#进入容器
+
+kubectl uncordon 10.145.167.66	#在master节点上操作允许某个node节点调度
+kubectl cordon 10.145.167.66	#在master节点上操作禁止某个node节点调度
 ```
 
 

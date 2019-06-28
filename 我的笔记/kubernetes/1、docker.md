@@ -102,7 +102,8 @@ docker images					#列出本地镜像
 docker inspect nginx:latest          #获取docker镜像的详细信息
 docker inspect -f '{{.NetworkSettings.IPAddress}}' mynginx           #获取在运行的mynginx容器IP
 docker rmi ubuntu:latest             #删除本地仓库的镜像，如果正在使用可加上 -f 强制删除但不建议使用
-Docker rmi $(docker images -a|grep none|awk '{print $3}')  删除没有打tag的镜像
+Docker rmi $(docker images -a|grep none|awk '{print $3}')  #删除没有打tag的镜像
+docker rmi $(docker images | grep gcr|awk '{print $1":"$2}')	#删除某些开通的docker镜像
 ```
 
 ## 3、镜像迁移|导入和导出
@@ -1079,64 +1080,638 @@ docker run -d --name nginx -v /app/nginx/nginx.conf:/etc/nginx/nginx.conf -v /ap
 
 # 第三章 kubernetes基础
 
-## 1、CentOS上搭建Kubernetes集群
+以centos 7 为例，搭建kubernetes集群，建议先关闭防火墙和SElinux，最简单的安装方法就是yum安装
 
-练习环境：
+参考：https://blog.csdn.net/networken/article/details/89599004
 
-**1.安装net-tools**
+参考：https://www.cnblogs.com/hongdada/p/9761336.html
 
-```bash
-[root@localhost ~]# yum install -y net-tools
-```
-
-**2.关闭firewalld**
+**单机版的kubernetes环境**
 
 ```bash
-[root@localhost ~]# systemctl stop firewalld && systemctl disable firewalld
-Removed symlink /etc/systemd/system/multi-user.target.wants/firewalld.service.
-Removed symlink /etc/systemd/system/dbus-org.fedoraproject.FirewallD1.service.
-[root@localhost ~]# setenforce 0
-[root@localhost ~]# sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+systemctl disable firewalld	#禁止开机自启动
+systemctl stop firewalld		#停止防火墙
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux	#禁用selinux
+yum install -y etcd kubernetes		#yum安装
+
+# 服务的启动程序
+systemctl start etcd &&
+systemctl start docker &&
+systemctl start kube-apiserver &&
+systemctl start kube-controller-manager &&
+systemctl start kube-scheduler &&
+systemctl start kubelet &&
+systemctl start kube-proxy
 ```
 
-### 1、安装Docker
+## 1、使用kubeadm在CentOS上搭建Kubernetes集群
+
+练习环境说明：[参考](https://www.kubernetes.org.cn/3808.html?tdsourcetag=s_pctim_aiomsg)      [参考](https://www.kubernetes.org.cn/5462.html)  共3台机器参考如下
+
+| 主机名称 | IP地址         | 部署软件                              | 备注   |
+| -------- | -------------- | ------------------------------------- | ------ |
+| M-kube12 | 192.168.10.12  | master+etcd+docker+keepalived+haproxy | master |
+| M-kube13 | 192.168.10.13  | master+etcd+docker+keepalived+haproxy | master |
+| M-kube14 | 192.168.10.14  | master+etcd+docker+keepalived+haproxy | master |
+| N-kube15 | 192.168.10.15  | docker+node                           | node   |
+| N-kube16 | 192.168.10.16  | docker+node                           | node   |
+| VIP      | 192.168.10.100 |                                       | VIP    |
+
+### 1.1、环境准备
+
+```bash
+# 1、关闭防火墙，SELinux，安装基础包
+yum install -y net-tools conntrack-tools wget vim  ntpdate libseccomp libtool-ltdl lrzsz		#在所有的机器上执行,安装基本命令
+
+systemctl stop firewalld && systemctl disable firewalld		#执行关闭防火墙和SELinux
+
+sestatus	#查看selinux状态
+setenforce 0		#临时关闭selinux
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+
+swapoff -a			#关闭swap
+sed -i 's/.*swap.*/#&/' /etc/fstab
+
+# 2、设置免密登陆
+ssh-keygen -t rsa		#配置免密登陆
+ssh-copy-id <ip地址>		#拷贝密钥
+
+# 3、更改国内yum源
+mv /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.$(date +%Y%m%d)
+wget -O /etc/yum.repos.d/CentOS-Base.repo http://mirrors.cloud.tencent.com/repo/centos7_base.repo
+wget -O /etc/yum.repos.d/epel.repo http://mirrors.cloud.tencent.com/repo/epel-7.repo
+#docker源
+wget https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo -O /etc/yum.repos.d/docker-ce.repo
+
+#配置国内Kubernetes源
+cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+EOF
+yum clean all && yum makecache -y
+
+#----------------------
+[root@localhost ~]#  cat >> /etc/yum.repos.d/kubernetes.repo << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+enabled=1
+gpgcheck=0
+EOF
+
+# 4、配置内核参数，将桥接的IPv4流量传递到IPtables链
+cat <<EOF >  /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_nonlocal_bind = 1
+net.ipv4.ip_forward = 1
+vm.swappiness=0
+EOF
+sysctl --system
+
+# 5.配置文件描述数
+echo "* soft nofile 65536" >> /etc/security/limits.conf
+echo "* hard nofile 65536" >> /etc/security/limits.conf
+echo "* soft nproc 65536"  >> /etc/security/limits.conf
+echo "* hard nproc 65536"  >> /etc/security/limits.conf
+echo "* soft  memlock  unlimited"  >> /etc/security/limits.conf
+echo "* hard memlock  unlimited"  >> /etc/security/limits.conf
+
+# 6.加载IPVS模块
+yum install ipset ipvsadm -y
+cat > /etc/sysconfig/modules/ipvs.modules <<EOF
+#!/bin/bash
+modprobe -- ip_vs
+modprobe -- ip_vs_rr
+modprobe -- ip_vs_wrr
+modprobe -- ip_vs_sh
+modprobe -- nf_conntrack_ipv4
+EOF
+#执行脚本
+chmod 755 /etc/sysconfig/modules/ipvs.modules && bash /etc/sysconfig/modules/ipvs.modules && lsmod | grep -e ip_vs -e nf_conntrack_ipv4
+
+
+#参考别人的
+cat << EOF > /etc/sysconfig/modules/ipvs.modules 
+#!/bin/bash
+ipvs_modules_dir="/usr/lib/modules/\`uname -r\`/kernel/net/netfilter/ipvs"
+for i in \`ls \$ipvs_modules_dir | sed  -r 's#(.*).ko.*#\1#'\`; do
+    /sbin/modinfo -F filename \$i  &> /dev/null
+    if [ \$? -eq 0 ]; then
+        /sbin/modprobe \$i
+    fi
+done
+EOF
+
+chmod +x /etc/sysconfig/modules/ipvs.modules 
+bash /etc/sysconfig/modules/ipvs.modules
+```
+
+### 1.2、配置keepalived
+
+```bash
+yum install -y keepalived
+
+#10.12机器上配置
+
+cat <<EOF > /etc/keepalived/keepalived.conf
+global_defs {
+   router_id LVS_k8s
+}
+
+vrrp_script CheckK8sMaster {
+    script "curl -k https://192.168.10.100:6443"
+    interval 3
+    timeout 9
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface ens33
+    virtual_router_id 100
+    priority 100
+    advert_int 1
+    mcast_src_ip 192.168.10.12
+    nopreempt
+    authentication {
+        auth_type PASS
+        auth_pass fana123
+    }
+    unicast_peer {
+        192.168.10.13
+        192.168.10.14
+    }
+    virtual_ipaddress {
+        192.168.10.100/24
+    }
+    track_script {
+        CheckK8sMaster
+    }
+
+}
+EOF
+
+#13机器keepalived配置
+cat <<EOF > /etc/keepalived/keepalived.conf
+global_defs {
+   router_id LVS_k8s
+}
+
+vrrp_script CheckK8sMaster {
+    script "curl -k https://192.168.10.100:6443"
+    interval 3
+    timeout 9
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ens33
+    virtual_router_id 100
+    priority 90
+    advert_int 1
+    mcast_src_ip 192.168.10.13
+    nopreempt
+    authentication {
+        auth_type PASS
+        auth_pass fana123
+    }
+    unicast_peer {
+        192.168.10.12
+        192.168.10.14
+    }
+    virtual_ipaddress {
+        192.168.10.100/24
+    }
+    track_script {
+        CheckK8sMaster
+    }
+}
+EOF
+
+#14机器上keepalived配置
+cat <<EOF > /etc/keepalived/keepalived.conf
+global_defs {
+   router_id LVS_k8s
+}
+
+vrrp_script CheckK8sMaster {
+    script "curl -k https://192.168.10.100:6443"
+    interval 3
+    timeout 9
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ens33
+    virtual_router_id 100
+    priority 80
+    advert_int 1
+    mcast_src_ip 192.168.10.14
+    nopreempt
+    authentication {
+        auth_type PASS
+        auth_pass fana123
+    }
+    unicast_peer {
+        192.168.10.12
+        192.168.10.13
+    }
+    virtual_ipaddress {
+        192.168.10.100/24
+    }
+    track_script {
+        CheckK8sMaster
+    }
+
+}
+EOF
+
+#启动keepalived
+systemctl restart keepalived && systemctl enable keepalived
+```
+
+### 1.3、配置haproxy
+
+```bash
+yum install -y haproxy
+
+#13机器上配置
+cat << EOF > /etc/haproxy/haproxy.cfg
+global
+    log         127.0.0.1 local2
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    maxconn     4000
+    user        haproxy
+    group       haproxy
+    daemon
+
+defaults
+    mode                    tcp
+    log                     global
+    retries                 3
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+
+frontend kubernetes
+    bind *:6443
+    mode tcp
+    default_backend kubernetes-master
+
+backend kubernetes-master
+    balance roundrobin
+    server M-kube12 192.168.10.12:6443 check maxconn 2000
+    server M-kube13 192.168.10.13:6443 check maxconn 2000
+    server M-kube14 192.168.10.14:6443 check maxconn 2000
+EOF
+
+#12,13，和 14机器上配置都一样
+
+# 启动haproxy
+systemctl enable haproxy && systemctl start haproxy
+```
+
+**也可以用容器的方式部署**
+
+```bash
+# haproxy启动脚本
+mkdir -p /data/lb
+cat > /data/lb/start-haproxy.sh << "EOF"
+#!/bin/bash
+MasterIP1=192.168.10.12
+MasterIP2=192.168.10.13
+MasterIP3=192.168.10.14
+MasterPort=6443
+
+docker run -d --restart=always --name HAProxy-K8S -p 6444:6444 \
+        -e MasterIP1=$MasterIP1 \
+        -e MasterIP2=$MasterIP2 \
+        -e MasterIP3=$MasterIP3 \
+        -e MasterPort=$MasterPort \
+        wise2c/haproxy-k8s
+EOF
+
+#keepalived启动脚本
+cat > /data/lb/start-keepalived.sh << "EOF"
+#!/bin/bash
+VIRTUAL_IP=192.168.10.100
+INTERFACE=ens33
+NETMASK_BIT=24
+CHECK_PORT=6444
+RID=10
+VRID=160
+MCAST_GROUP=224.0.0.18
+
+docker run -itd --restart=always --name=Keepalived-K8S \
+        --net=host --cap-add=NET_ADMIN \
+        -e VIRTUAL_IP=$VIRTUAL_IP \
+        -e INTERFACE=$INTERFACE \
+        -e CHECK_PORT=$CHECK_PORT \
+        -e RID=$RID \
+        -e VRID=$VRID \
+        -e NETMASK_BIT=$NETMASK_BIT \
+        -e MCAST_GROUP=$MCAST_GROUP \
+        wise2c/keepalived-k8s
+EOF
+
+#把脚本拷贝到13和14机器上，然后启动
+sh /data/lb/start-haproxy.sh && sh /data/lb/start-keepalived.sh
+
+docker ps #可以看到容器的启动状态，相关配置文件可以进入容器查看
+```
+
+### 1.4、配置etcd
+
+**14.1、在10.12机器上配置etcd证书**
+
+```bash
+#下载cfssl包
+wget https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
+wget https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
+wget https://pkg.cfssl.org/R1.2/cfssl-certinfo_linux-amd64
+#设置cfssl环境
+chmod +x cfssl*
+mv cfssl_linux-amd64 /usr/local/bin/cfssl
+mv cfssljson_linux-amd64 /usr/local/bin/cfssljson
+mv cfssl-certinfo_linux-amd64 /usr/local/bin/cfssl-certinfo
+export PATH=/usr/local/bin:$PATH
+
+#配置CA文件（IP地址为etc节点的IP）
+mkdir /root/ssl
+cd /root/ssl
+
+cat >  ca-config.json <<EOF
+{
+"signing": {
+"default": {
+  "expiry": "8760h"
+},
+"profiles": {
+  "kubernetes-Soulmate": {
+    "usages": [
+        "signing",
+        "key encipherment",
+        "server auth",
+        "client auth"
+    ],
+    "expiry": "8760h"
+  }
+}
+}
+}
+EOF
+
+#--------------------------------------------------------#
+
+cat >  ca-csr.json <<EOF
+{
+"CN": "kubernetes-Soulmate",
+"key": {
+"algo": "rsa",
+"size": 2048
+},
+"names": [
+{
+  "C": "CN",
+  "ST": "shanghai",
+  "L": "shanghai",
+  "O": "k8s",
+  "OU": "System"
+}
+]
+}
+EOF
+
+#--------------------------------------------------------#
+
+cat > etcd-csr.json <<EOF
+{
+  "CN": "etcd",
+  "hosts": [
+    "127.0.0.1",
+    "192.168.10.12",
+    "192.168.10.13",
+    "192.168.10.14"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "shanghai",
+      "L": "shanghai",
+      "O": "k8s",
+      "OU": "System"
+    }
+  ]
+}
+EOF
+
+#--------------------------------------------------------#
+cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+
+cfssl gencert -ca=ca.pem \
+  -ca-key=ca-key.pem \
+  -config=ca-config.json \
+  -profile=kubernetes-Soulmate etcd-csr.json | cfssljson -bare etcd
+  
+#将10.13的etcd证书分发到14,15机器上
+
+mkdir -p /etc/etcd/ssl
+cp *.pem /etc/etcd/ssl/
+
+ssh -n 192.168.10.13 "mkdir -p /etc/etcd/ssl && exit"
+ssh -n 192.168.10.14 "mkdir -p /etc/etcd/ssl && exit"
+
+scp -r /etc/etcd/ssl/*.pem 192.168.10.13:/etc/etcd/ssl/
+scp -r /etc/etcd/ssl/*.pem 192.168.10.14:/etc/etcd/ssl/
+```
+
+**1.4.2、在3台主节点上操作，安装etcd**
+
+```bash
+yum install etcd -y
+mkdir -p /var/lib/etcd
+```
+
+```bash
+#10.12机器上操作
+cat <<EOF >/etc/systemd/system/etcd.service
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/coreos
+
+[Service]
+Type=notify
+WorkingDirectory=/var/lib/etcd/
+ExecStart=/usr/bin/etcd \
+  --name M-kube12 \
+  --cert-file=/etc/etcd/ssl/etcd.pem \
+  --key-file=/etc/etcd/ssl/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --peer-cert-file=/etc/etcd/ssl/etcd.pem \
+  --peer-key-file=/etc/etcd/ssl/etcd-key.pem \
+  --peer-trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --initial-advertise-peer-urls https://192.168.10.12:2380 \
+  --listen-peer-urls https://192.168.10.12:2380 \
+  --listen-client-urls https://192.168.10.12:2379,http://127.0.0.1:2379 \
+  --advertise-client-urls https://192.168.10.12:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster M-kube12=https://192.168.10.12:2380,M-kube13=https://192.168.10.13:2380,M-kube14=https://192.168.10.14:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+```bash
+#10.13上机器操作
+cat <<EOF >/etc/systemd/system/etcd.service
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/coreos
+
+[Service]
+Type=notify
+WorkingDirectory=/var/lib/etcd/
+ExecStart=/usr/bin/etcd \
+  --name M-kube13 \
+  --cert-file=/etc/etcd/ssl/etcd.pem \
+  --key-file=/etc/etcd/ssl/etcd-key.pem \
+  --peer-cert-file=/etc/etcd/ssl/etcd.pem \
+  --peer-key-file=/etc/etcd/ssl/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --initial-advertise-peer-urls https://192.168.10.13:2380 \
+  --listen-peer-urls https://192.168.10.13:2380 \
+  --listen-client-urls https://192.168.10.13:2379,http://127.0.0.1:2379 \
+  --advertise-client-urls https://192.168.10.13:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster M-kube12=https://192.168.10.12:2380,M-kube13=https://192.168.10.13:2380,M-kube14=https://192.168.10.14:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+```bash
+#10.15机器上操作
+cat <<EOF >/etc/systemd/system/etcd.service
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/coreos
+
+[Service]
+Type=notify
+WorkingDirectory=/var/lib/etcd/
+ExecStart=/usr/bin/etcd \
+  --name M-kube14 \
+  --cert-file=/etc/etcd/ssl/etcd.pem \
+  --key-file=/etc/etcd/ssl/etcd-key.pem \
+  --peer-cert-file=/etc/etcd/ssl/etcd.pem \
+  --peer-key-file=/etc/etcd/ssl/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/ssl/ca.pem \
+  --initial-advertise-peer-urls https://192.168.10.14:2380 \
+  --listen-peer-urls https://192.168.10.14:2380 \
+  --listen-client-urls https://192.168.10.14:2379,http://127.0.0.1:2379 \
+  --advertise-client-urls https://192.168.10.14:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster M-kube12=https://192.168.10.12:2380,M-kube13=https://192.168.10.13:2380,M-kube14=https://192.168.10.14:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+```bash
+#添加自启动
+cp /etc/systemd/system/etcd.service /usr/lib/systemd/system/
+systemctl daemon-reload && systemctl start etcd && systemctl enable etcd && systemctl status etcd
+ 
+#在etc节点上检查
+etcdctl --endpoints=https://192.168.10.12:2379,https://192.168.10.13:2379,https://192.168.10.14:2379 \
+ --ca-file=/etc/etcd/ssl/ca.pem \
+ --cert-file=/etc/etcd/ssl/etcd.pem \
+ --key-file=/etc/etcd/ssl/etcd-key.pem  cluster-health
+
+#正常的话会有如下提示
+[root@M-kube13 ~]# etcdctl --endpoints=https://192.168.10.12:2379,https://192.168.10.13:2379,https://192.168.10.14:2379 \
+>  --ca-file=/etc/etcd/ssl/ca.pem \
+>  --cert-file=/etc/etcd/ssl/etcd.pem \
+>  --key-file=/etc/etcd/ssl/etcd-key.pem  cluster-health
+member 1af68d968c7e3f22 is healthy: got healthy result from https://192.168.10.12:2379
+member 55204c19ed228077 is healthy: got healthy result from https://192.168.10.14:2379
+member e8d9a97b17f26476 is healthy: got healthy result from https://192.168.10.13:2379
+```
+
+### 1.5、安装Docker
 
 如今Docker分为了Docker-CE和Docker-EE两个版本，CE为社区版即免费版，EE为企业版即商业版。我们选择使用CE版。
 
-**1.安装yum源工具包**
+在所有的机器上安装docker
+
+**yum安装docker**
 
 ```bash
-[root@localhost ~]# yum install -y yum-utils device-mapper-persistent-data lvm2
-```
+#1.安装yum源工具包
+yum install -y yum-utils device-mapper-persistent-data lvm2
 
-**2.下载docker-ce官方的yum源配置文件**
+#2.下载docker-ce官方的yum源配置文件，上面操作了 这里就不操作了
+# yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+# yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
 
-```bash
-[root@localhost ~]# yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-```
-
-**3.禁用docker-c-edge源配edge是不开发版，不稳定，下载stable版**
-
-```bash
+#3.禁用docker-c-edge源配edge是不开发版，不稳定，下载stable版
 yum-config-manager --disable docker-ce-edge
-```
-
-**4.更新本地YUM源缓存**
-
-```bash
+#4.更新本地YUM源缓存
 yum makecache fast
-```
-
-**5.安装Docker-ce相应版本的**
-
-```bash
+#5.安装Docker-ce相应版本
 yum -y install docker-ce
+#6.设置开机自启动
+systemctl restart docker && systemctl enable docker && systemctl status docker
 ```
 
-**6.运行hello world**
+**运行hello world验证**
 
 ```bash
-[root@localhost ~]# systemctl start docker
 [root@localhost ~]# docker run hello-world
 Unable to find image 'hello-world:latest' locally
 latest: Pulling from library/hello-world
@@ -1165,185 +1740,326 @@ For more examples and ideas, visit:
 https://docs.docker.com/engine/userguide/
 ```
 
-### 2、安装kubelet与kubeadm包
+### 1.6、安装kubelet与kubeadm包
 
-使用kubeadm init命令初始化集群之下载Docker镜像到所有主机的实始化时会下载kubeadm必要的依赖镜像，同时安装etcd,kube-dns,kube-proxy,由于我们GFW防火墙问题我们不能直接访问，因此先通过其它方法下载下面列表中的镜像，然后导入到系统中，再使用kubeadm init来初始化集群
-
-**1.使用DaoCloud加速器(可以跳过这一步)**
+**使用DaoCloud加速器(可以跳过这一步)**
 
 ```bash
-[root@localhost ~]# curl -sSL https://get.daocloud.io/daotools/set_mirror.sh | sh -s http://0d236e3f.m.daocloud.io
-docker version >= 1.12
-{"registry-mirrors": ["http://0d236e3f.m.daocloud.io"]}
-Success.
-You need to restart docker to take effect: sudo systemctl restart docker
-[root@localhost ~]# systemctl restart docker
+curl -sSL https://get.daocloud.io/daotools/set_mirror.sh | sh -s http://0d236e3f.m.daocloud.io
+# docker version >= 1.12
+# {"registry-mirrors": ["http://0d236e3f.m.daocloud.io"]}
+# Success.
+# You need to restart docker to take effect: sudo systemctl restart docker
+systemctl restart docker
 ```
 
-**2.下载镜像,自己通过Dockerfile到dockerhub生成对镜像,也可以克隆我的**
+**在所有机器安装kubectl kubelet kubeadm kubernetes-cni**
 
 ```bash
-images=(kube-controller-manager-amd64 etcd-amd64 k8s-dns-sidecar-amd64 kube-proxy-amd64 kube-apiserver-amd64 kube-scheduler-amd64 pause-amd64 k8s-dns-dnsmasq-nanny-amd64 k8s-dns-kube-dns-amd64)
-for imageName in ${images[@]} ; do
- docker pull champly/$imageName
- docker tag champly/$imageName gcr.io/google_containers/$imageName
- docker rmi champly/$imageName
-done
-```
-
-**3.修改版本**
-
-```bash
-docker tag gcr.io/google_containers/etcd-amd64 gcr.io/google_containers/etcd-amd64:3.0.17 && \
-docker rmi gcr.io/google_containers/etcd-amd64 && \
-docker tag gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64 gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64:1.14.5 && \
-docker rmi gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64 && \
-docker tag gcr.io/google_containers/k8s-dns-kube-dns-amd64 gcr.io/google_containers/k8s-dns-kube-dns-amd64:1.14.5 && \
-docker rmi gcr.io/google_containers/k8s-dns-kube-dns-amd64 && \
-docker tag gcr.io/google_containers/k8s-dns-sidecar-amd64 gcr.io/google_containers/k8s-dns-sidecar-amd64:1.14.2 && \
-docker rmi gcr.io/google_containers/k8s-dns-sidecar-amd64 && \
-docker tag gcr.io/google_containers/kube-apiserver-amd64 gcr.io/google_containers/kube-apiserver-amd64:v1.7.5 && \
-docker rmi gcr.io/google_containers/kube-apiserver-amd64 && \
-docker tag gcr.io/google_containers/kube-controller-manager-amd64 gcr.io/google_containers/kube-controller-manager-amd64:v1.7.5 && \
-docker rmi gcr.io/google_containers/kube-controller-manager-amd64 && \
-docker tag gcr.io/google_containers/kube-proxy-amd64 gcr.io/google_containers/kube-proxy-amd64:v1.6.0 && \
-docker rmi gcr.io/google_containers/kube-proxy-amd64 && \
-docker tag gcr.io/google_containers/kube-scheduler-amd64 gcr.io/google_containers/kube-scheduler-amd64:v1.7.5 && \
-docker rmi gcr.io/google_containers/kube-scheduler-amd64 && \
-docker tag gcr.io/google_containers/pause-amd64 gcr.io/google_containers/pause-amd64:3.0 && \
-docker rmi gcr.io/google_containers/pause-amd64
-```
-
-**4.添加阿里源**
-
-```bash
-[root@localhost ~]#  cat >> /etc/yum.repos.d/kubernetes.repo << EOF
-[kubernetes]
-name=Kubernetes
-baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
-enabled=1
-gpgcheck=0
-EOF
-```
-
-**5.查看kubectl kubelet kubeadm kubernetes-cni列表**
-
-```bash
-[root@localhost ~]# yum list kubectl kubelet kubeadm kubernetes-cni
+yum list kubectl kubelet kubeadm kubernetes-cni		#查看可安装的包
 已加载插件：fastestmirror
 Loading mirror speeds from cached hostfile
 * base: mirrors.tuna.tsinghua.edu.cn
 * extras: mirrors.sohu.com
 * updates: mirrors.sohu.com
-可安装的软件包
-kubeadm.x86_64                                                     1.7.5-0                                              kubernetes
-kubectl.x86_64                                                     1.7.5-0                                              kubernetes
-kubelet.x86_64                                                     1.7.5-0                                              kubernetes
-kubernetes-cni.x86_64                                              0.5.1-0                                              kubernetes
+#显示可安装的软件包
+kubeadm.x86_64                                    1.14.3-0                                              kubernetes
+kubectl.x86_64                                    1.14.3-0                                             kubernetes
+kubelet.x86_64                                    1.14.3-0                                              kubernetes
+kubernetes-cni.x86_64                             0.7.5-0                                              kubernetes
 [root@localhost ~]#
+
+#然后安装kubectl kubelet kubeadm kubernetes-cni
+yum install -y kubectl kubelet kubeadm kubernetes-cni
+
+# Kubelet负责与其他节点集群通信，并进行本节点Pod和容器生命周期的管理。
+# Kubeadm是Kubernetes的自动化部署工具，降低了部署难度，提高效率。
+# Kubectl是Kubernetes集群管理工具
 ```
 
-**6.安装kubectl kubelet kubeadm kubernetes-cni**
+**修改kubelet配置文件**（可不操作）
 
 ```bash
-[root@localhost ~]# yum install -y kubectl kubelet kubeadm kubernetes-cni
+vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf	#或者在如下目录可不操作
+/usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
+# 修改一行
+Environment="KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs"
+# 添加一行
+Environment="KUBELET_EXTRA_ARGS=--v=2 --fail-swap-on=false --pod-infra-container-image=registry.cn-hangzhou.aliyuncs.com/k8sth/pause-amd64:3.0"
+#重新加载配置
+systemctl daemon-reload		
+
+
+#1.命令补全
+yum install -y bash-completion
+source /usr/share/bash-completion/bash_completion
+source <(kubectl completion bash)
+echo "source <(kubectl completion bash)" >> ~/.bashrc
+#启动所有主机上的kubelet服务
+systemctl enable kubelet && systemctl start kubelet		
 ```
 
-### 3、修改cgroups
+### 1.7、初始化集群
+
+**kubeadm init主要执行了以下操作：**
+
+​	[init]：指定版本进行初始化操作
+​	[preflight] ：初始化前的检查和下载所需要的Docker镜像文件
+​	[kubelet-start]：生成kubelet的配置文件”/var/lib/kubelet/config.yaml”，没有这个文件kubelet无法启动，所以初始化之前的kubelet实际上启动失败。
+​	[certificates]：生成Kubernetes使用的证书，存放在/etc/kubernetes/pki目录中。
+​	[kubeconfig] ：生成 KubeConfig 文件，存放在/etc/kubernetes目录中，组件之间通信需要使用对应文件。
+​	[control-plane]：使用/etc/kubernetes/manifest目录下的YAML文件，安装 Master 组件。
+​	[etcd]：使用/etc/kubernetes/manifest/etcd.yaml安装Etcd服务。
+​	[wait-control-plane]：等待control-plan部署的Master组件启动。
+​	[apiclient]：检查Master组件服务状态。
+​	[uploadconfig]：更新配置
+​	[kubelet]：使用configMap配置kubelet。
+​	[patchnode]：更新CNI信息到Node上，通过注释的方式记录。
+​	[mark-control-plane]：为当前节点打标签，打了角色Master，和不可调度标签，这样默认就不会使用Master节点来运行Pod。
+​	[bootstrap-token]：生成token记录下来，后边使用kubeadm join往集群中添加节点时会用到
+​	[addons]：安装附加组件CoreDNS和kube-proxy
+
+**1.7.1、在10.12 机器上添加集群初始化配置文件**
 
 ```bash
-vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-```
+kubeadm config print init-defaults > kubeadm-config.yaml	#这个命令可以生成初始化配置文件也可以自己写
 
-update KUBELET_CGROUP_ARGS=--cgroup-driver=systemd to KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs
+# 1.创建初始化集群配置文件，
+cat <<EOF > /etc/kubernetes/kubeadm-master.config
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterConfiguration
+kubernetesVersion: v1.14.3
+controlPlaneEndpoint: "192.168.10.100:6443"
+imageRepository: registry.aliyuncs.com/google_containers  
+apiServer:
+  certSANs:
+  - 192.168.10.12
+  - 192.168.10.13
+  - 192.168.10.14
+  - 192.168.10.100
+etcd:
+  external:
+    endpoints:
+    - https://192.168.10.12:2379
+    - https://192.168.10.13:2379
+    - https://192.168.10.14:2379
+    caFile: /etc/etcd/ssl/ca.pem
+    certFile: /etc/etcd/ssl/etcd.pem
+    keyFile: /etc/etcd/ssl/etcd-key.pem
+networking:
+  podSubnet: 10.244.0.0/16
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+EOF
 
-修改kubelet中的cAdvisor监控的端口，默认为0改为4194，这样就可以通过浏器查看kubelet的监控cAdvisor的web页
+#2.然后执行
+kubeadm config images pull --config kubeadm-master.config	#可以先执行这个提前下载镜像
+kubeadm init --config kubeadm-master.config --experimental-upload-certs | tee kubeadm-init.log
+# 追加tee命令可以将初始化日志输出到kubeadm-init.log中，添加--experimental-upload-certs参数可以在后续执行加入节点时自动分发证书文件。
 
-```bash
-[root@kub-master ~]# vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-```
+#3.初始化失败后处理方法
+kubeadm reset		#初始化失败或者成功，都可以直接执行kubeadm reset命令清理集群或节点
+#或
+rm -rf /etc/kubernetes/*.conf
+rm -rf /etc/kubernetes/manifests/*.yaml
+docker ps -a |awk '{print $1}' |xargs docker rm -f
+systemctl  stop kubelet
 
- <!--Environment="KUBELET_CADVISOR_ARGS=--cadvisor-port=4194"--> 
+#初始化正常的结果如下
+Your Kubernetes control-plane has initialized successfully!
 
-**启动所有主机上的kubelet服务**
+To start using your cluster, you need to run the following as a regular user:
 
-```bash
-[root@master ~]# systemctl enable kubelet && systemctl start kubelet
-```
-
-**初始化master master节点上操作**
-
-```bash
-[root@master ~]# kubeadm reset && kubeadm init --apiserver-advertise-address=192.168.0.100 --kubernetes-version=v1.7.5 --pod-network-cidr=10.200.0.0/16
-[preflight] Running pre-flight checks
-[reset] Stopping the kubelet service
-[reset] Unmounting mounted directories in "/var/lib/kubelet"
-[reset] Removing kubernetes-managed containers
-[reset] Deleting contents of stateful directories: [/var/lib/kubelet /etc/cni/net.d /var/lib/dockershim /var/lib/etcd]
-[reset] Deleting contents of config directories: [/etc/kubernetes/manifests /etc/kubernetes/pki]
-[reset] Deleting files: [/etc/kubernetes/admin.conf /etc/kubernetes/kubelet.conf /etc/kubernetes/controller-manager.conf /etc/kubernetes/scheduler.conf]
-[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
-[init] Using Kubernetes version: v1.7.5
-[init] Using Authorization modes: [Node RBAC]
-[preflight] Running pre-flight checks
-[preflight] WARNING: docker version is greater than the most recently validated version. Docker version: 17.09.0-ce. Max validated version: 1.12
-[preflight] Starting the kubelet service
-[kubeadm] WARNING: starting in 1.8, tokens expire after 24 hours by default (if you require a non-expiring token use --token-ttl 0)
-[certificates] Generated CA certificate and key.
-[certificates] Generated API server certificate and key.
-[certificates] API Server serving cert is signed for DNS names [master kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 192.168.0.100]
-[certificates] Generated API server kubelet client certificate and key.
-[certificates] Generated service account token signing key and public key.
-[certificates] Generated front-proxy CA certificate and key.
-[certificates] Generated front-proxy client certificate and key.
-[certificates] Valid certificates and keys now exist in "/etc/kubernetes/pki"
-[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/admin.conf"
-[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
-[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/controller-manager.conf"
-[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/scheduler.conf"
-[apiclient] Created API client, waiting for the control plane to become ready
-[apiclient] All control plane components are healthy after 34.002949 seconds
-[token] Using token: 0696ed.7cd261f787453bd9
-[apiconfig] Created RBAC rules
-[addons] Applied essential addon: kube-proxy
-[addons] Applied essential addon: kube-dns
-
-Your Kubernetes master has initialized successfully!
-
-To start using your cluster, you need to run (as a regular user):
-
- mkdir -p $HOME/.kube
- sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
- sudo chown $(id -u):$(id -g) $HOME/.kube/config
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 You should now deploy a pod network to the cluster.
 Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
- http://kubernetes.io/docs/admin/addons/
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
 
-You can now join any number of machines by running the following on each node
-as root:
+You can now join any number of the control-plane node running the following command on each as root:
 
- kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443
+  kubeadm join 192.168.10.100:6443 --token y6v90q.i6bl1bwcgg8clvh5 \
+    --discovery-token-ca-cert-hash sha256:179c5689ef32be2123c9f02015ef25176d177c54322500665f1170f26368ae3d \
+    --experimental-control-plane --certificate-key 3044cb04c999706795b28c1d3dcd2305dcf181787d7c6537284341a985395c20
 
-[root@master ~]#
+Please note that the certificate-key gives access to cluster sensitive data, keep it secret!
+As a safeguard, uploaded-certs will be deleted in two hours; If necessary, you can use 
+"kubeadm init phase upload-certs --experimental-upload-certs" to reload certs afterward.
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 192.168.10.100:6443 --token y6v90q.i6bl1bwcgg8clvh5 \
+    --discovery-token-ca-cert-hash sha256:179c5689ef32be2123c9f02015ef25176d177c54322500665f1170f26368ae3d 
+    
+#5.然后拷贝文件
+mkdir -p /root/.kube
+cp -i /etc/kubernetes/admin.conf /root/.kube/config
+chown $(id -u):$(id -g) /root/.kube/config		#如果是其他用户需要使用kubectl命令，需要拷贝到$HOME目录，然后赋权
+
 ```
 
-kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443 这个一定要记住,以后无法重现，添加节点需要
-
-### 4、添加节点
+**1.7.2、查看当前状态**
 
 ```bash
-[root@node1 ~]# kubeadm join --token 0696ed.7cd261f787453bd9 192.168.0.100:6443
+[root@M-kube12 kubernetes]# kubectl get node
+NAME       STATUS     ROLES    AGE     VERSION
+m-kube12   NotReady   master   3m40s   v1.14.3		# STATUS显示的状态还是不可用
+
+[root@M-kube12 kubernetes]# kubectl -n kube-system get pod
+NAME                               READY   STATUS    RESTARTS   AGE
+coredns-8686dcc4fd-fmlsh           0/1     Pending   0          3m40s
+coredns-8686dcc4fd-m22j7           0/1     Pending   0          3m40s
+etcd-m-kube12                      1/1     Running   0          2m59s
+kube-apiserver-m-kube12            1/1     Running   0          2m53s
+kube-controller-manager-m-kube12   1/1     Running   0          2m33s
+kube-proxy-4kg8d                   1/1     Running   0          3m40s
+kube-scheduler-m-kube12            1/1     Running   0          2m45s
+
+[root@M-kube12 kubernetes]# kubectl get cs
+NAME                 STATUS    MESSAGE             ERROR
+controller-manager   Healthy   ok                  
+scheduler            Healthy   ok                  
+etcd-0               Healthy   {"health":"true"} 
+```
+
+**1.7.3、部署flannel网络，在12机器上执行**
+
+```bash
+wget https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+#版本信息：quay.io/coreos/flannel:v0.10.0-amd64
+
+cat kube-flannel.yml | grep image
+cat kube-flannel.yml | grep 10.244
+sed -i 's#quay.io/coreos/flannel:v0.11.0-amd64#willdockerhub/flannel:v0.11.0-amd64#g' kube-flannel.yml
+kubectl apply -f kube-flannel.yml
+#或者
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/a70459be0084506e4ec919aa1c114638878db11b/Documentation/kube-flannel.yml
+
+
+#等待一会 查看 node和pod 状态全部为Running
+[root@M-fana3 kubernetes]# kubectl get node              
+NAME      STATUS   ROLES    AGE   VERSION
+m-fana3   Ready    master   42m   v1.14.3		#状态正常了
+[root@M-fana3 kubernetes]# kubectl -n kube-system get pod
+NAME                              READY   STATUS    RESTARTS   AGE
+coredns-8686dcc4fd-2z6m2          1/1     Running   0          42m
+coredns-8686dcc4fd-4k7mm          1/1     Running   0          42m
+etcd-m-fana3                      1/1     Running   0          41m
+kube-apiserver-m-fana3            1/1     Running   0          41m
+kube-controller-manager-m-fana3   1/1     Running   0          41m
+kube-flannel-ds-amd64-6zrzt       1/1     Running   0          109s
+kube-proxy-lc8d5                  1/1     Running   0          42m
+kube-scheduler-m-fana3            1/1     Running   0          41m
+
+#如果遇到问题想如下情况，有可能镜像拉取失败了，
+kubectl -n kube-system get pod                                          
+NAME                               READY   STATUS                  RESTARTS   AGE
+coredns-8686dcc4fd-c9mw7           0/1     Pending                 0          43m
+coredns-8686dcc4fd-l8fpm           0/1     Pending                 0          43m
+kube-apiserver-m-kube12            1/1     Running                 0          42m
+kube-controller-manager-m-kube12   1/1     Running                 0          17m
+kube-flannel-ds-amd64-gcmmp        0/1     Init:ImagePullBackOff   0          11m
+kube-proxy-czzk7                   1/1     Running                 0          43m
+kube-scheduler-m-kube12            1/1     Running                 0          42m
+
+#可以通过 kubectl describe pod kube-flannel-ds-amd64-gcmmp --namespace=kube-system 查看pod状态，看到最后报错如下，可以手动下载或者二进制安装
+Node-Selectors:  beta.kubernetes.io/arch=amd64
+Tolerations:     :NoSchedule
+                 node.kubernetes.io/disk-pressure:NoSchedule
+                 node.kubernetes.io/memory-pressure:NoSchedule
+                 node.kubernetes.io/network-unavailable:NoSchedule
+                 node.kubernetes.io/not-ready:NoExecute
+                 node.kubernetes.io/pid-pressure:NoSchedule
+                 node.kubernetes.io/unreachable:NoExecute
+                 node.kubernetes.io/unschedulable:NoSchedule
+Events:
+  Type     Reason          Age                    From               Message
+  ----     ------          ----                   ----               -------
+  Normal   Scheduled       11m                    default-scheduler  Successfully assigned kube-system/kube-flannel-ds-amd64-gcmmp to m-kube12
+  Normal   Pulling         11m                    kubelet, m-kube12  Pulling image "willdockerhub/flannel:v0.11.0-amd64"
+  Warning  FailedMount     7m27s                  kubelet, m-kube12  MountVolume.SetUp failed for volume "flannel-token-6g9n7" : couldn't propagate object cache: timed out waiting for the condition
+  Warning  FailedMount     7m27s                  kubelet, m-kube12  MountVolume.SetUp failed for volume "flannel-cfg" : couldn't propagate object cache: timed out waiting for the condition
+  Warning  Failed          4m21s                  kubelet, m-kube12  Failed to pull image "willdockerhub/flannel:v0.11.0-amd64": rpc error: code = Unknown desc = context canceled
+  Warning  Failed          3m53s                  kubelet, m-kube12  Failed to pull image "willdockerhub/flannel:v0.11.0-amd64": rpc error: code = Unknown desc = Error response from daemon: Get https://registry-1.docker.io/v2/: net/http: request canceled (Client.Timeout exceeded while awaiting headers)
+  Warning  Failed          3m16s                  kubelet, m-kube12  Failed to pull image "willdockerhub/flannel:v0.11.0-amd64": rpc error: code = Unknown desc = Error response from daemon: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout
+  Warning  Failed          3m16s (x3 over 4m21s)  kubelet, m-kube12  Error: ErrImagePull
+  Normal   SandboxChanged  3m14s                  kubelet, m-kube12  Pod sandbox changed, it will be killed and re-created.
+  Normal   BackOff         2m47s (x6 over 4m21s)  kubelet, m-kube12  Back-off pulling image "willdockerhub/flannel:v0.11.0-amd64"
+  Warning  Failed          2m47s (x6 over 4m21s)  kubelet, m-kube12  Error: ImagePullBackOff
+  Normal   Pulling         2m33s (x4 over 7m26s)  kubelet, m-kube12  Pulling image "willdockerhub/flannel:v0.11.0-amd64"
+
+
+```
+
+**在13和14机器上操作加入集群**
+
+```bash
+#执行加入集群命令
+kubeadm join 192.168.10.100:6443 --token y6v90q.i6bl1bwcgg8clvh5 \
+    --discovery-token-ca-cert-hash sha256:179c5689ef32be2123c9f02015ef25176d177c54322500665f1170f26368ae3d \
+    --experimental-control-plane --certificate-key 3044cb04c999706795b28c1d3dcd2305dcf181787d7c6537284341a985395c20
+# 拷贝kube到用户目录
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# 验证机器状态
+kubectl -n kube-system get pod -o wide	#查看pod运行情况
+
+kubectl get nodes -o wide #查看节点情况
+
+kubectl -n kube-system get svc	#查看service
+NAME       TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)                  AGE
+kube-dns   ClusterIP   10.96.0.10   <none>        53/UDP,53/TCP,9153/TCP   16m
+```
+
+11
+
+
+
+
+
+
+
+
+
+
+
+
+
+这个一定要记住,以后无法重现，添加节点需要
+
+```bash
+# 配置kubectl工具
+mkdir -p /root/.kube
+cp /etc/kubernetes/admin.conf /root/.kube/config	#如果是其他用户也要拷贝到对应的用户目录下然后赋权
+kubectl get nodes
+kubectl get cs
+
+#部署flannel网络
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/a70459be0084506e4ec919aa1c114638878db11b/Documentation/kube-flannel.yml
+```
+
+**6、添加node节点**
+
+```bash
+#在node节点的机器上执行操作
+kubeadm join 192.168.10.13:6443 --token wdmykh.u84g6ijzu4n99qez --discovery-token-ca-cert-hash sha256:868b5d27c078ddd3ce98bf67bbad4d8568d3cb134763b732e7ad4b47eda196b2
+#提示如下
 [kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
 [preflight] Running pre-flight checks
 [preflight] WARNING: docker version is greater than the most recently validated version. Docker version: 17.09.0-ce. Max validated version: 1.12
 [preflight] WARNING: kubelet service is not enabled, please run 'systemctl enable kubelet.service'
 [preflight] Starting the kubelet service
-[discovery] Trying to connect to API Server "192.168.0.100:6443"
-[discovery] Created cluster-info discovery client, requesting info from "https://192.168.0.100:6443"
-[discovery] Cluster info signature and contents are valid, will use API Server "https://192.168.0.100:6443"
-[discovery] Successfully established connection with API Server "192.168.0.100:6443"
-[bootstrap] Detected server version: v1.7.10
+[discovery] Trying to connect to API Server "192.168.10.13:6443"
+[discovery] Created cluster-info discovery client, requesting info from "https://192.168.10.13:6443"
+[discovery] Cluster info signature and contents are valid, will use API Server "https://192.168.10.13:6443"
+[discovery] Successfully established connection with API Server "192.168.10.13:6443"
+[bootstrap] Detected server version: v1.14.3
 [bootstrap] The server supports the Certificates API (certificates.k8s.io/v1beta1)
 [csr] Created API client to obtain unique certificate for this node, generating keys and certificate signing request
 [csr] Received signed certificate from the API server, generating KubeConfig...
@@ -1357,36 +2073,20 @@ Node join complete:
 Run 'kubectl get nodes' on the master to see this machine join.
 ```
 
-**在master配置kubectl的kubeconfig文件**
+**7、查看集群验证**
 
 ```bash
-[root@master ~]# mkdir -p $HOME/.kube
-[root@master ~]# cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-[root@master ~]# chown $(id -u):$(id -g) $HOME/.kube/config
-```
-
-**在Master上安装flannel**
-
-```bash
-docker pull quay.io/coreos/flannel:v0.8.0-amd64
-kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.8.0/Documentation/kube-flannel.yml
-kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.8.0/Documentation/kube-flannel-rbac.yml
-```
-
-### 5、查看集群
-
-```bash
-[root@master ~]# kubectl get cs
+kubectl get cs		#在master节点上操作
 NAME                 STATUS    MESSAGE              ERROR
 scheduler            Healthy   ok
 controller-manager   Healthy   ok
 etcd-0               Healthy   {"health": "true"}
-[root@master ~]# kubectl get nodes
+kubectl get nodes	#查看node节点
 NAME      STATUS     AGE       VERSION
-master    Ready      24m       v1.7.5
-node1     NotReady   45s       v1.7.5
-node2     NotReady   7s        v1.7.5
-[root@master ~]# kubectl get pods --all-namespaces
+master    Ready      24m       v1.14.3
+node1     NotReady   45s       v1.14.3
+node2     NotReady   7s        v1.14.3
+kubectl get pods --all-namespaces		#查看pod
 NAMESPACE     NAME                             READY     STATUS              RESTARTS   AGE
 kube-system   etcd-master                      1/1       Running             0          24m
 kube-system   kube-apiserver-master            1/1       Running             0          24m
@@ -1399,40 +2099,215 @@ kube-system   kube-proxy-qxxzr                 0/1       ImagePullBackOff    0  
 kube-system   kube-proxy-shkmx                 0/1       ImagePullBackOff    0          25m
 kube-system   kube-proxy-vtk52                 0/1       ContainerCreating   0          1m
 kube-system   kube-scheduler-master            1/1       Running             0          24m
-[root@master ~]#
+
+#创建pod验证集群是否正常
+kubectl create deployment nginx --image=nginx
+kubectl expose deployment nginx --port=80 --type=NodePort
+kubectl get pod,svc
 ```
 
 如果出现：The connection to the server localhost:8080 was refused - did you specify the right host or port?
 
 解决办法： 为了使用kubectl访问apiserver，在~/.bash_profile中追加下面的环境变量： export KUBECONFIG=/etc/kubernetes/admin.conf source ~/.bash_profile 重新初始化kubectl
 
----
-
-**单机版的kubernetes环境**
+**8、部署dashboard**
 
 ```bash
-systemctl disable firewalld	#禁止开机自启动
-systemctl stop firewalld		#停止防火墙
-yum install -y etcd kubernetes		#yum安装
+#1.创建yaml文件
+wget https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.1/src/deploy/recommended/kubernetes-dashboard.yaml
 
-# 服务的启动程序
-systemctl start etcd
-systemctl start docker
-systemctl start kube-apiserver
-systemctl start kube-controller-manager
-systemctl start kube-scheduler
-systemctl start kubelet
-systemctl start kube-proxy
+sed -i 's/k8s.gcr.io/loveone/g' kubernetes-dashboard.yaml
+sed -i "160a \ \ \ \ \ \ nodePort: 30001" kubernetes-dashboard.yaml
+sed -i "161a \ \ type:\ NodePort" kubernetes-dashboard.yaml
+
+#2.创建dashboard
+kubectl create -f kubernetes-dashboard.yaml
+
+#3.检查相关服务状态
+kubectl get deployment kubernetes-dashboard -n kube-system
+kubectl get pods -n kube-system -o wide
+kubectl get services -n kube-system
+netstat -ntlp|grep 30001
+
+#4.查看访问dashboard的认证令牌
+kubectl describe secrets -n kube-system $(kubectl -n kube-system get secret | awk '/dashboard-admin/{print $1}')
 ```
 
-## 2、kubectl命令行
+
+
+
+
+## 2、以二进制文件方式安装kubernetes集群
+
+一般生产集群版搭建最少3台master，多台node，以下练习环境 总共4台机器：[参考](<https://www.jianshu.com/p/832bcd89bc07>)
+
+练习环境说明：
+
+master:192.168.10.15 192.168.10.16
+
+node:192.168.10.13 192.168.14
+
+[参考1](https://www.cnblogs.com/harlanzhang/p/10131264.html) [参考2](https://blog.51cto.com/13941177/2316025) 
+
+在master节点上需要部署，etcd 	kube-apiserver	kube-controller-manager	kuber-scheduler
+
+在 Node 节点上需要部署， etcd	docker		kubelet		kube-proxy
+
+### 2.1、下载安装包
+
+[GitHub网址](<https://github.com/kubernetes/kubernetes/releases>)  <https://github.com/kubernetes/kubernetes/releases>  
+
+下载Server Binaries 中的 [kubernetes-server-linux-amd64.tar.gz](https://dl.k8s.io/v1.14.3/kubernetes-server-linux-amd64.tar.gz) 安装包，上传到master服务器上 并解压到/usr/bin目录
+
+下载Node Binaries中的 [kubernetes-node-linux-amd64.tar.gz](https://dl.k8s.io/v1.14.3/kubernetes-node-linux-amd64.tar.gz) 安装包，上传到node服务器上 并解压到/usr/bin目录
+
+下载 Cl Binares
+
+下载 etcd安装包 GitHub地址：<https://github.com/etcd-io/etcd/releases> 上传到master服务器上，解压到/usr/bin目录
+
+
+
+### 2.2、搭建服务
+
+**1、etcd服务**  ，将文件解压到/usr/bin目录
+
+
+
+**2、kube-apiserver服务** 
+
+
+
+**3、kube-controller-manager服务**
+
+
+
+**4、kube-scheduler服务**
+
+
+
+至此master机器上就搭建完成了，下面搭建的都是node上的服务，node需要先安装docker并启动
+
+**5、kubelet服务** 
+
+
+
+**6、kube-proxy服务**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
+## 2、kubectl常用命令
+
+kubectl 命令的语法：kubectl	[command]	[type]	[name]	[flags]	含义如下
+
+command：子命令，用于操作kubernetes集群资源对象的命令，如：create delete describe get apply
+
+type：资源对象的类型，区分大小写，能以单数，复数形式或者简写的形式表示
+
+name：资源对象的名称，区分大小写，如果不指定名称，则系统返回属于type的全部列表，如 kubecel get pods 返回的是所有pod列表
+
+flags：子命令的可选参数，
+
+**可操作的资源对象类型**
+
+| 资源对象的名称 | 缩写 |
+| -------------- | ---- |
+| clusters       |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+|                |      |
+
+
 
 ```bash
-kubectl create -f myweb-rc.yaml	#通过RC文件，创建tomcat容器
-kubectl get pods	#查看pod实例
 kubectel get services	#查看创建的容器服务
 kubectl get nodes	#查看集群中有多少node
 kubectl describe node (node_name)	#查看某个node的详细信息
+kubectl describe node 192.168.0.212	# 显示 Node 的详细信息
+kubectl get endpoints		#查看endpoint列表(会显示pod名和访问的IP地址)
+
+kubectl get namespaces		#查看命名空间
+
+kubectl get pods	#查看pod实例
+kubectl get pod
+kubectl get pod -n kube 	# 查看所有 pod 列表,  -n 后跟 namespace, 查看指定的命名空间
+kubectl delete pod --all	# 删除所有 Pod
+kubectl delete pod,svc -l name=<label-name>		# 删除所有包含某个 label 的pod 和 service
+
+# 执行 pod 的 date 命令
+kubectl exec <pod-name> -- date
+kubectl exec <pod-name> -- bash
+kubectl exec <pod-name> -- ping 10.24.51.9
+# 通过bash获得 pod 中某个容器的TTY，相当于登录容器
+kubectl exec -it <pod-name> -c <container-name> -- bash
+eg:
+kubectl exec -it redis-master-cln81 -- bash
+
+# 显示 Pod 的详细信息, 特别是查看 pod 无法创建的时候的日志
+kubectl describe pod <pod-name>
+eg:
+kubectl describe pod redis-master-tqds9
+
+
+# 根据 yaml 创建资源, apply 可以重复执行，create 不行
+kubectl create -f pod.yaml
+kubectl apply -f pod.yaml
+kubectl create -f myweb-rc.yaml	#通过RC文件，创建tomcat容器
+
+# 基于 pod.yaml 定义的名称删除 pod 
+kubectl delete -f pod.yaml 
+
+
+# 查看 RC 和 service 列表， -o wide 查看详细信息
+kubectl get rc,svc
+kubectl get pod,svc -o wide  
+kubectl get pod <pod-name> -o yaml
+kubectl get svc <pod-name> -o yaml	#查看微服务分配的 cluster ip
+
+
+# 查看容器的日志
+kubectl logs <pod-name>
+kubectl logs -f <pod-name> # 实时查看日志
 ```
 
 **tomcat应用yml文件**
@@ -1569,15 +2444,37 @@ kubectl describe deployments	#可以看到deployment控制pod的水平扩展过�
 kubectl autoscale deployment php-apache --cpu-percent=90 --min=1 --max=10	#除了yaml文件定义外，通过命令创建HPA资源对象
 ```
 
-**==StatefulSet==**
+**==StatefulSet==** 在kubernetes里，pod的管理对象RC、Deployment、DaemonSet和job都是面向无状态的服务，但现实中有很多服务是有状态的。staefulset可以看作是Deployment/rc的一个特殊变种，有以下特性：1、每个pod都有稳定和唯一的网络标识，可以发现集群内的其他成员/2、pod的启停是可以控制的，3、采用了稳定的持久化存储卷，删除pod不会删除与statefulset相关的存储卷。
 
+**==service==** 就是指我们的微服务，
 
+kubernetes里有三种IP。
 
+Node IP : node节点的IP地址，集群中每个节点的物理网卡的IP地址。
 
+Pod IP: pod的ip地址 ，他是docker0网桥分配的IP，是一个虚拟的二层网络，真实的流量都是通过 node IP的物理网卡流出的。
 
+Cluster IP :service的IP地址，也是一个虚拟的IP，属于kubernetes集群内部的地址，无法再集群直接使用。仅仅作为kubernetes service 这个对象，无法ping，不具备TCP/IP通信的基础，只属于kubernetes集群这样的一个封闭空间，如果需要和Cluster IP 网通信，一般是采用NodePort，因为Cluster IP是kubernetes自己设计的路由规则。
 
+**==Volume==** 是pod中能够被多个容器访问的共享目录，用途和目的与docker的容器卷类似，单不能等价。kubernetes提供了很多Volume类型
 
+1、emptyDir	是pod分配到node时创建的，当pod从node上移除时，emptyDir中的数据也会被永久被删除
 
+2、hostPath	是pod在挂载宿主机上的文件或目录，通常用于，容器的应用日志需要保存时，可以使用宿主机存储，需要访问宿主机上docker引擎内部数据结构的容器应用时，可以定义hostPath为宿主机/var/lib/docker目录，使容器内部可以直接访问docker的文件系统。
+
+3、gcePersistentDisk	这样的类型表示使用谷歌公有云提供的永久磁盘。
+
+4、awsElasticBlockStore	表示使用了亚马逊提供的 EBS Volume存储数据
+
+5、NFS	使用NFS网络文件系统提供的共享目录存储数据
+
+6、其他如：iscsi		flocker		rbd		gitRepo
+
+**==Persistent Volume==** 可以理解成 kubernetes集群中的某个网络存储对应的一块存储。与Volume是有区别的，PV是网络存储，不属于NOde，但可以在每个node上访问，他不是定义在pod上的，而是独立于pod之外，
+
+**==namespace==**(命名空间) 是非常重要的感念，多数情况下用于实现多租户的资源隔离，默认kubernetes启动后，会创建一个名为default的命名空间。
+
+**==Annotation==**(注解) 与label用法类似，不同的是label是具有严格的命名规则，而Annotation则是用户任意定义的附加信息。
 
 
 
