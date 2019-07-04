@@ -1164,11 +1164,11 @@ ca.crt:     1025 bytes
 #9.在浏览器输入<master_ip:端口> 就可以访问Dashboard了，然后kubernetes仪表板，选择令牌，输入查到的Token
 ```
 
-## 2、以二进制文件方式安装kubernetes集群
+## 2、二进制文件方式安装kubernetes集群
 
 所有操作全部用root使用者进行，高可用一般建议大于等于3台的奇数,我们使用3台master来做高可用
 
-练习环境说明：[参考1](https://www.cnblogs.com/harlanzhang/p/10131264.html)		 [参考2](https://blog.51cto.com/13941177/2316025) 		[参考3](https://www.cnblogs.com/JetpropelledSnake/p/10612763.html) 		[参考4](https://www.kubernetes.org.cn/5163.html)		[参考5](https://blog.csdn.net/Yan_Chou/article/details/78954602)		[参考6](http://www.pianshen.com/article/1167211572/#362_kubeapiserver_693) 		[参考7](https://blog.51cto.com/13210651/2362052)		[参考8](https://www.jianshu.com/p/c492f5efdadf?utm_campaign=maleskine&utm_content=note&utm_medium=seo_notes&utm_source=recommendation)		[参考GitHub](https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/07-3.kube-proxy.md)		
+练习环境说明：[参考1](https://www.cnblogs.com/harlanzhang/p/10131264.html)		 [参考2](https://blog.51cto.com/13941177/2316025) 		[参考3](https://www.cnblogs.com/JetpropelledSnake/p/10612763.html) 		[参考4](https://www.kubernetes.org.cn/5163.html)		[参考5](https://blog.csdn.net/Yan_Chou/article/details/78954602)		[参考6](http://www.pianshen.com/article/1167211572/#362_kubeapiserver_693) 		[参考7](https://blog.51cto.com/13210651/2362052)		[参考8](https://www.jianshu.com/p/c492f5efdadf?utm_campaign=maleskine&utm_content=note&utm_medium=seo_notes&utm_source=recommendation)		[参考GitHub](https://github.com/opsnull/follow-me-install-kubernetes-cluster)		
 
 master： kube-apiserver，kube-controller-manager，kube-scheduler，flanneld 
 
@@ -1221,6 +1221,8 @@ wget https://download.docker.com/linux/static/stable/x86_64/docker-18.09.6.tgz
 wget https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
 wget https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
 wget https://pkg.cfssl.org/R1.2/cfssl-certinfo_linux-amd64
+#heapster
+wget https://github.com/kubernetes-retired/heapster/archive/v1.5.4.tar.gz
 ```
 
 ### 2.2、环境准备
@@ -2602,7 +2604,7 @@ cat > kubelet.config.json <<EOF
       "cacheUnauthorizedTTL": "30s"
     }
   },
-  "address": "192.168.10.15",
+  "address": "0.0.0.0",
   "port": 10250,
   "readOnlyPort": 0,
   "cgroupDriver": "cgroupfs",
@@ -2617,7 +2619,7 @@ cat > kubelet.config.json <<EOF
 }
 EOF
 
-#6.拷贝到其他主机,注意需要修改address为本机IP地址
+#6.拷贝到其他主机,注意，可以修改address为本机IP地址
 cp kubelet.config.json /etc/kubernetes/ssl
 scp kubelet.config.json 192.168.10.15:/etc/kubernetes/ssl
 scp kubelet.config.json 192.168.10.16:/etc/kubernetes/ssl
@@ -2844,6 +2846,14 @@ curl -s --cacert /etc/kubernetes/ssl/ca.pem -H "Authorization: Bearer ${TOKEN}" 
 
 注意：kublet.config.json 设置 authentication.anonymous.enabled 为 false，不允许匿名证书访问 10250 的 https 服务；参考[A.浏览器访问kube-apiserver安全端口.md](https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/A.浏览器访问kube-apiserver安全端口.md)，创建和导入相关证书，然后访问上面的 10250 端口；
 
+```bash
+#1.需要安装jdk然后使用keytool工具
+.\keytool -import -v -trustcacerts -alias appmanagement -file "E:\ca.pem" -storepass password -keystore cacerts
+#2.然后在linux上执行
+openssl pkcs12 -export -out admin.pfx -inkey admin-key.pem -in admin.pem -certfile ca.pem
+#3.然后把证书导进去，就可以正常访问了
+```
+
 #### 2.8.2、部署kube-proxy
 
 kube-proxy 运行在所有 worker 节点上，，它监听 apiserver 中 service 和 Endpoint 的变化情况，创建路由规则来进行服务负载均衡。
@@ -3006,16 +3016,62 @@ spec:
         - containerPort: 80
 EOF
 
-kubectl create -f nginx-web.yml		#执行文件
+#2.执行文件
+kubectl create -f nginx-web.yml		
+#显示已创建
+service/nginx-web created
+deployment.extensions/nginx-con created
 
-kubectl get pod -o wide		#查看pod状态
+#3.查看pod状态
+kubectl get pod -o wide
+#显示如下
+NAME                         READY   STATUS    RESTARTS   AGE    IP            NODE            NOMINATED NODE   READINESS GATES
+nginx-con-7dc84bdfb6-h6bt6   1/1     Running   0          105s   172.30.85.2   192.168.10.16   <none>           <none>
+nginx-con-7dc84bdfb6-nt5qs   1/1     Running   0          105s   172.30.34.3   192.168.10.15   <none>           <none>
+nginx-con-7dc84bdfb6-sfg87   1/1     Running   0          105s   172.30.34.2   192.168.10.15   <none>           <none>
 
-#测试IP是否ping通
+#4.测试IP是否ping通
+ping -c4 172.30.34.2
+PING 172.30.34.2 (172.30.34.2) 56(84) bytes of data.
+64 bytes from 172.30.34.2: icmp_seq=1 ttl=63 time=0.543 ms
+64 bytes from 172.30.34.2: icmp_seq=2 ttl=63 time=0.684 ms
+64 bytes from 172.30.34.2: icmp_seq=3 ttl=63 time=0.886 ms
+64 bytes from 172.30.34.2: icmp_seq=4 ttl=63 time=0.817 ms
 
-kubectl get svc		#查看server集群IP
+#5.查看server集群IP
+kubectl get svc		#显示如下
+NAME         TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+kubernetes   ClusterIP   10.254.0.1       <none>        443/TCP        37h
+nginx-web    NodePort    10.254.153.104   <none>        80:31808/TCP   4m19s
+# 10.254.153.104是nginx的集群IP，代理前面3个pod，80是集群IP的端口31808是nodeport端口
 
-#curl访问验证
+#6.curl访问node_ip：nodeport
+curl -I 192.168.10.15:31808		#状态200表示访问成功
+HTTP/1.1 200 OK
+Server: nginx/1.17.0
+Date: Sat, 29 Jun 2019 05:03:15 GMT
+Content-Type: text/html
+Content-Length: 612
+Last-Modified: Tue, 21 May 2019 14:23:57 GMT
+Connection: keep-alive
+ETag: "5ce409fd-264"
+Accept-Ranges: bytes
 
+#7.在flannel网络主机上访问集群IP
+ip add | grep 10.254
+    inet 10.254.0.1/32 brd 10.254.0.1 scope global kube-ipvs0
+    inet 10.254.153.104/32 brd 10.254.153.104 scope global kube-ipvs0
+
+curl -I http://10.254.153.104:80	#返回如下
+HTTP/1.1 200 OK
+Server: nginx/1.17.0
+Date: Sat, 29 Jun 2019 05:05:56 GMT
+Content-Type: text/html
+Content-Length: 612
+Last-Modified: Tue, 21 May 2019 14:23:57 GMT
+Connection: keep-alive
+ETag: "5ce409fd-264"
+Accept-Ranges: bytes
 ```
 
 ### 2.9、部署集群插件
@@ -3025,31 +3081,511 @@ kubectl get svc		#查看server集群IP
 #### 2.9.1、部署coredns插件
 
 ```bash
+#1.将kubernetes-server-linux-amd64.tar.gz解压后，再解压其中的 kubernetes-src.tar.gz 文件
+tar -zxvf kubernetes-src.tar.gz -C src	 #coredns对应的目录是：cluster/addons/dns
 
+#2.修改配置文件
+cd src/cluster/addons/dns/coredns
+cp coredns.yaml.base /etc/kubernetes/coredns.yaml
+
+sed -i "s/__PILLAR__DNS__DOMAIN__/cluster.local/g" /etc/kubernetes/coredns.yaml
+sed -i "s/__PILLAR__DNS__SERVER__/10.254.0.2/g" /etc/kubernetes/coredns.yaml
+
+#3.创建coredns
+kubectl create -f /etc/kubernetes/coredns.yaml
+
+#4.检查codedns功能
+kubectl -n kube-system get all -o wide
+#显示如下
+NAME                          READY   STATUS    RESTARTS   AGE
+pod/coredns-8854569d4-5vshp   1/1     Running   0          58m
+#
+NAME               TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)                  AGE
+service/kube-dns   ClusterIP   10.254.0.2   <none>        53/UDP,53/TCP,9153/TCP   81m
+#
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/coredns   1/1     1            1           58m
+#
+NAME                                DESIRED   CURRENT   READY   AGE
+replicaset.apps/coredns-8854569d4   1         1         1       58m
+#4.1
+kubectl -n kube-system describe pod coredns
+#4.2
+kubectl -n kube-system logs coredns-8854569d4-5vshp
+
+#5.使用容器验证
+kubectl run dns-test --rm -it --image=alpine /bin/sh
+#进入容器 ping 百度正常
+ping www.baidu.com
+PING www.baidu.com (182.61.200.6): 56 data bytes
+64 bytes from 182.61.200.6: seq=0 ttl=127 time=41.546 ms
+64 bytes from 182.61.200.6: seq=1 ttl=127 time=35.043 ms
+64 bytes from 182.61.200.6: seq=2 ttl=127 time=38.977 ms
+64 bytes from 182.61.200.6: seq=3 ttl=127 time=40.633 ms
+
+#查看所有集群pod
+kubectl get --all-namespaces pods
+
+#6.如果遇到镜像下载不下来，可以修改文件
+sed -i "s/k8s.gcr.io/coredns/g" /etc/kubernetes/coredns.yaml
 ```
 
 #### 2.9.2、部署dashboard插件
 
-```bash
+ 参考
+https://github.com/kubernetes/dashboard/wiki/Access-control 
+https://github.com/kubernetes/dashboard/issues/2558 
+https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/
 
+```bash
+#1.将kubernetes-server-linux-amd64.tar.gz 解压后，再解压其中的 kubernetes-src.tar.gz 文件。dashboard 对应的目录是：cluster/addons/dashboard ，拷贝dashboard的文件
+
+mkdir -p /etc/kubernetes/dashboard
+
+cp -a /opt/kubernetes/src/cluster/addons/dashboard/{dashboard-configmap.yaml,dashboard-controller.yaml,dashboard-rbac.yaml,dashboard-secret.yaml,dashboard-service.yaml} /etc/kubernetes/dashboard
+
+#2.修改配置文件
+sed -i "s@image:.*@image: registry.cn-hangzhou.aliyuncs.com/google_containers/kubernetes-dashboard-amd64:v1.10.1@g" /etc/kubernetes/dashboard/dashboard-controller.yaml
+sed -i "/spec/a\  type: NodePort" /etc/kubernetes/dashboard/dashboard-service.yaml
+sed -i "/targetPort/a\    nodePort: 32700" /etc/kubernetes/dashboard/dashboard-service.yaml
+
+#3.执行所有定义文件
+kubectl create -f /etc/kubernetes/dashboard
+
+#4.查看分配的NodePort
+kubectl -n kube-system get all -o wide
+#
+NAME                                        READY   STATUS    RESTARTS   AGE
+pod/coredns-8854569d4-5vshp                 1/1     Running   0          119m
+pod/kubernetes-dashboard-7d5f7c58f5-mr8zn   1/1     Running   0          5m1s
+#
+NAME                           TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)                  AGE
+service/kube-dns               ClusterIP   10.254.0.2     <none>        53/UDP,53/TCP,9153/TCP   142m
+service/kubernetes-dashboard   NodePort    10.254.63.16   <none>        443:32700/TCP            51s
+#
+NAME                                   READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/coredns                1/1     1            1           119m
+deployment.apps/kubernetes-dashboard   1/1     1            1           5m4s
+#
+NAME                                              DESIRED   CURRENT   READY   AGE
+replicaset.apps/coredns-8854569d4                 1         1         1       119m
+replicaset.apps/kubernetes-dashboard-7d5f7c58f5   1         1         1       5m4s
+
+kubectl -n kube-system describe pod kubernetes-dashboard
+
+#NodePort映射到dasrd pod 443端口；
+#dashboard的 --authentication-mode 支持 token、basic，默认为 token。如果使用 basic，则 kube-apiserver 必须配置 '--authorization-mode=ABAC' 和 '--basic-auth-file' 参数。
+
+#5.查看 dashboard 支持的命令行参数
+kubectl exec --namespace kube-system -it kubernetes-dashboard-7d5f7c58f5-mr8zn -- /dashboard --help
+
+#6.访问dashboard
+# 为了集群安全，从1.7开始，dashboard只允许通过https访问，如果使用kube proxy则必须监听localhost或 127.0.0.1，对于NodePort没有这个限制，但是仅建议在开发环境中使用。对于不满足这些条件的登录访问，在登录成功后浏览器不跳转，始终停在登录界面。
+参考1：https://github.com/kubernetes/dashboard/wiki/Accessing-Dashboard---1.7.X-and-above
+参考2：https://github.com/kubernetes/dashboard/issues/2540
+# 三种访问 dashboard 的方式
+# 通过NodePort访问dashboard：
+# 通过kubectl proxy访问dashboard：
+# 通过kube-apiserver访问dashboard；
+
+#7.通过NodePort访问dashboard
+# kubernetes-dashboard服务暴露了NodePort，可以使用http://NodeIP:NodePort地址访问dashboard；
+
+#8.通过 kubectl proxy 访问 dashboard
+#启动代理：
+kubectl proxy --address='localhost' --port=8086 --accept-hosts='^*$'
+# --address 必须为 localhost 或 127.0.0.1；
+# 需要指定 --accept-hosts 选项，否则浏览器访问 dashboard 页面时提示 “Unauthorized”；
+# 浏览器访问 URL：http://127.0.0.1:8086/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy
+
+#9.通过 kube-apiserver 访问 dashboard
+# 获取集群服务地址列表：
+kubectl cluster-info
+# 必须通过 kube-apiserver 的安全端口(https)访问 dashbaord，访问时浏览器需要使用自定义证书，否则会被 kube-apiserver 拒绝访问。
+# 创建和导入自定义证书的步骤，参考：A.浏览器访问kube-apiserver安全端口
+# 浏览器访问 URL：https://192.168.10.100:8443/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy
+
+#10.创建登录 Dashboard 的 token 和 kubeconfig 配置文件
+# 上面提到，Dashboard 默认只支持 token 认证，所以如果使用 KubeConfig 文件，需要在该文件中指定 token，不支持使用 client 证书认证。
+
+# 创建登录 token，访问 dashboard时使用
+kubectl create sa dashboard-admin -n kube-system
+kubectl create clusterrolebinding dashboard-admin --clusterrole=cluster-admin --serviceaccount=kube-system:dashboard-admin
+ADMIN_SECRET=$(kubectl get secrets -n kube-system | grep dashboard-admin | awk '{print $1}')
+DASHBOARD_LOGIN_TOKEN=$(kubectl describe secret -n kube-system ${ADMIN_SECRET} | grep -E '^token' | awk '{print $2}')
+echo ${DASHBOARD_LOGIN_TOKEN}
+
+#使用输出的 token 登录 Dashboard。
+
+#创建使用 token 的 KubeConfig 文件
+cd /root/ssl
+#设置集群参数
+kubectl config set-cluster kubernetes \
+  --certificate-authority=ca.pem \
+  --embed-certs=true \
+  --server=https://192.168.10.100:8443 \
+  --kubeconfig=dashboard.kubeconfig
+
+#设置客户端认证参数，使用上面创建的 Token
+kubectl config set-credentials dashboard_user \
+  --token=${DASHBOARD_LOGIN_TOKEN} \
+  --kubeconfig=dashboard.kubeconfig
+
+#设置上下文参数
+kubectl config set-context default \
+  --cluster=kubernetes \
+  --user=dashboard_user \
+  --kubeconfig=dashboard.kubeconfig
+
+#设置默认上下文
+kubectl config use-context default --kubeconfig=dashboard.kubeconfig
+
+#生成的 dashboard.kubeconfig 登录 Dashboard。
+#由于缺少 Heapster 插件，当前 dashboard 不能展示 Pod、Nodes 的 CPU、内存等统计数据和图表；
 ```
 
 #### 2.9.3、部署heapster插件
 
-```bash
+Heapster是一个收集者，将每个Node上的cAdvisor的数据进行汇总，然后导到第三方工具(如InfluxDB)。Heapster 是通过调用 kubelet 的 http API 来获取 cAdvisor 的 metrics 数据的。由于 kublet 只在 10250 端口接收 https 请求，故需要修改 heapster 的 deployment 配置。同时，需要赋予 kube-system:heapster ServiceAccount 调用 kubelet API 的权限。
 
+参考：配置 heapster：https://github.com/kubernetes/heapster/blob/master/docs/source-configuration.md
+
+heapster下载地址：https://github.com/kubernetes-retired/heapster/releases
+
+```bash
+#1.解压heapster
+mkdir /opt/heapster
+tar -xzvf heapster-1.5.4.tar.gz -C /opt/heapster
+
+#2.修改配置
+mkdir -p /etc/kubernetes/heapster
+cp -a /opt/heapster/deploy/kube-config/influxdb/{grafana.yaml,heapster.yaml,influxdb.yaml} /etc/kubernetes/heapster
+
+sed -i "s@image:.*@image: registry.cn-hangzhou.aliyuncs.com/google_containers/heapster-grafana-amd64:v4.4.3@g" /etc/kubernetes/heapster/grafana.yaml
+
+sed -i "67a\  type: NodePort" /etc/kubernetes/heapster/grafana.yaml
+
+sed -i "/targetPort/a\    nodePort: 32699" /etc/kubernetes/heapster/grafana.yaml
+
+sed -i "s@image:.*@image: registry.cn-hangzhou.aliyuncs.com/google_containers/heapster-amd64:v1.5.3@g" /etc/kubernetes/heapster/heapster.yaml
+
+# 由于 kubelet 只在 10250 监听 https 请求，故添加相关参数；
+sed -i "s@source=.*@source=kubernetes:https://kubernetes.default?kubeletHttps=true\&kubeletPort=10250@g" /etc/kubernetes/heapster/heapster.yaml
+
+sed -i "s@image:.*@image: registry.cn-hangzhou.aliyuncs.com/google_containers/heapster-influxdb-amd64:v1.3.3@g" /etc/kubernetes/heapster/influxdb.yaml
+
+# 将 serviceAccount kube-system:heapster 与 ClusterRole system:kubelet-api-admin 绑定，授予它调用 kubelet API 的权限；
+cp -a /opt/heapster/deploy/kube-config/rbac/heapster-rbac.yaml /etc/kubernetes/heapster
+
+cat > /etc/kubernetes/heapster/heapster-rbac.yaml <<EOF
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: heapster-kubelet-api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kubelet-api-admin
+subjects:
+- kind: ServiceAccount
+  name: heapster
+  namespace: kube-system
+EOF
+
+#3.执行所有定义文件
+kubectl create -f  /etc/kubernetes/heapster
+kubectl apply -f  /etc/kubernetes/heapster/heapster-rbac.yaml
+
+#4.检查执行结果
+kubectl -n kube-system get all -o wide | grep -E 'heapster|monitoring'
+
+kubectl -n kube-system describe pod heapster
+
+kubectl -n kube-system describe pod monitoring
+
+# 检查 kubernets dashboard 界面，可以正确显示各 Nodes、Pods 的 CPU、内存、负载等统计数据和图表：
+
+kubectl -n kube-system get all -o wide
+
+kubectl -n kube-system logs heapster-7bdc95b5cc-8h7zt
+
+#5.访问 grafana,通过 NodePort 访问：
+kubectl get svc -n kube-system|grep -E 'monitoring|heapster'
+#显示如下,grafana 监听 NodePort 32699；
+heapster               ClusterIP   10.254.159.62    <none>        80/TCP                   12m     k8s-app=heapster
+monitoring-grafana     NodePort    10.254.167.38    <none>        80:32699/TCP             4m29s   k8s-app=grafana
+monitoring-influxdb    ClusterIP   10.254.155.141   <none>        8086/TCP                 12m     k8s-app=influxdb
+
+kubectl get pod -n kube-system -o wide |grep -E 'monitoring|heapster' 
+#显示如下，然后浏览器访问 URL：http://192.168.10.16:32699/?orgId=1
+heapster-7bdc95b5cc-8h7zt               1/1     Running   0          13m     172.30.34.4    192.168.10.15
+monitoring-grafana-6cf5948cd4-rstxk     1/1     Running   0          5m      172.30.85.11   192.168.10.16
+monitoring-influxdb-7d6c5fb944-qfd65    1/1     Running   0          13m     172.30.85.10   192.168.10.16
+
+#6.通过 kube-apiserver 访问： 获取 monitoring-grafana 服务 URL：
+kubectl cluster-info	
+#查到浏览器访问URL：https://192.168.10.100:8443/api/v1/namespaces/kube-system/services/monitoring-grafana/proxy
+
+#通过 kubectl proxy 访问：创建代理
+kubectl proxy --address='192.168.10.16' --port=8086 --accept-hosts='^*$'
+# 浏览器访问 URL：http://192.168.10.16:8086/api/v1/namespaces/kube-system/services/monitoring-grafana/proxy/?orgId=1
 ```
 
 #### 2.9.4、部署EFK插件
 
 ```bash
+#1.修改定义文件；EFK 对应的目录在压缩包kubernetes-src.tar.gz：里的cluster/addons/fluentd-elasticsearch/
+mkdir -p /etc/kubernetes/efk
+cp -a cluster/addons/fluentd-elasticsearch/*.yaml /etc/kubernetes/efk
 
+sed -i "s@image:.*elasticsearch.*@image: registry.cn-hangzhou.aliyuncs.com/zhangbohan/elasticsearch:v6.6.1@g" /etc/kubernetes/efk/es-statefulset.yaml
+
+sed -i "s@image:.*fluentd.*@image: registry.cn-hangzhou.aliyuncs.com/k8s-yun/fluentd-elasticsearch:v2.4.0@g" /etc/kubernetes/efk/fluentd-es-ds.yaml
+
+#2.给 Node 设置标签
+#DaemonSet fluentd-es只会调度到设置了标签 beta.kubernetes.io/fluentd-ds-ready=true的Node，需要在期望运行fluentd的 Node 上设置该标签；
+kubectl get nodes
+
+kubectl label nodes 192.168.10.15 beta.kubernetes.io/fluentd-ds-ready=true
+
+kubectl describe nodes 192.168.10.15
+
+kubectl get nodes --show-labels
+
+#3.执行定义文件
+
+kubectl create -f /etc/kubernetes/efk
+
+#4.检查执行结果
+kubectl -n kube-system get all  -o wide|grep -E 'elasticsearch|fluentd|kibana'
+
+kubectl -n kube-system  get service |grep -E 'elasticsearch|kibana'
+
+kubectl -n kube-system describe pods elasticsearch
+
+kubectl -n kube-system describe pods fluentd
+
+kubectl -n kube-system describe pods kibana
+
+# kibana Pod 第一次启动时会用**较长时间(0-20分钟)**来优化和 Cache 状态页面，可以 tailf 该 Pod 的日志观察进度：
+kubectl -n kube-system -f logs kibana-logging-7445dc9757-pvpcv
+
+# 注意：只有当的 Kibana pod 启动完成后，才能查看 kibana dashboard，否则会提示 refuse。
+
+#5.访问 kibana 通过 kube-apiserver 访问：
+kubectl cluster-info|grep -E 'Elasticsearch|Kibana'
+#查到浏览器访问 URL： https://192.168.10.100:8443/api/v1/namespaces/kube-system/services/kibana-logging/proxy
+
+#通过 kubectl proxy 访问：
+#创建代理
+kubectl proxy --address='192.168.10.12' --port=8086 --accept-hosts='^*$'
+#浏览器访问 URL：http://192.168.10.12:8086/api/v1/namespaces/kube-system/services/kibana-logging/proxy
+
+#在 Settings -> Indices 页面创建一个 index（相当于 mysql 中的一个 database），选中 Index contains time-based events，使用默认的 logstash-* pattern，点击 Create ;
+# 创建 Index 后，稍等几分钟就可以在 Discover 菜单下看到 ElasticSearch logging 中汇聚的日志；
 ```
 
 #### 2.9.5、部署metrics-server插件
 
-```bash
+ 参考：https://kubernetes.feisky.xyz/zh/addons/metrics.html
+metrics-server RBAC：https://github.com/kubernetes-incubator/metrics-server/issues/40
+metrics-server 参数：https://github.com/kubernetes-incubator/metrics-server/issues/25
+https://kubernetes.io/docs/tasks/debug-application-cluster/core-metrics-pipeline/
 
+```bash
+#1.创建CA证书，创建 metrics-server 证书签名请求:
+#注意： CN 名称为 aggregator，需要与 kube-apiserver 的 --requestheader-allowed-names 参数配置一致；
+cd /root/ssl
+cat > metrics-server-csr.json <<EOF
+{
+  "CN": "aggregator",
+  "hosts": [],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ShangHai",
+      "L": "ShangHai",
+      "O": "k8s",
+      "OU": "System"
+    }
+  ]
+}
+EOF
+
+#3.生成 metrics-server 证书和私钥：
+
+cfssl gencert -ca=ca.pem \
+  -ca-key=ca-key.pem  \
+  -config=ca-config.json  \
+  -profile=kubernetes metrics-server-csr.json | cfssljson -bare metrics-server
+
+#4.拷贝metrics-server到master节点：
+cp metrics-server*.pem /etc/kubernetes/ssl
+scp metrics-server*.pem 192.168.10.13:/etc/kubernetes/ssl
+scp metrics-server*.pem 192.168.10.14:/etc/kubernetes/ssl
+
+#5.修改kubernetes控制平面组件的配置以支持metrics-server
+#kube-apiserver添加如下配置参数：
+--requestheader-client-ca-file=/etc/kubernetes/ssl/ca.pem \
+--requestheader-allowed-names="" \
+--requestheader-extra-headers-prefix="X-Remote-Extra-" \
+--requestheader-group-headers=X-Remote-Group \
+--requestheader-username-headers=X-Remote-User \
+--proxy-client-cert-file=/etc/kubernetes/ssl/metrics-server.pem \
+--proxy-client-key-file=/etc/kubernetes/ssl/metrics-server-key.pem \
+--enable-aggregator-routing=true \
+--runtime-config=api/all=true
+#--requestheader-XXX、--proxy-client-XXX 是 kube-apiserver 的 aggregator layer 相关的配置参数，metrics-server & HPA 需要使用；
+# --requestheader-client-ca-file：用于签名 --proxy-client-cert-file 和 --proxy-client-key-file 指定的证书；在启用了 metric aggregator 时使用；
+# 如果 --requestheader-allowed-names 不为空，则--proxy-client-cert-file 证书的 CN 必须位于 allowed-names 中，默认为 aggregator;
+# 如果 kube-apiserver 机器没有运行 kube-proxy，则还需要添加 --enable-aggregator-routing=true 参数；
+
+# 关于 --requestheader-XXX 相关参数，参考：
+https://github.com/kubernetes-incubator/apiserver-builder/blob/master/docs/concepts/auth.md
+
+https://docs.bitnami.com/kubernetes/how-to/configure-autoscaling-custom-metrics/
+# 注意：requestheader-client-ca-file 指定的 CA 证书，必须具有 client auth and server auth；
+
+# kube-controllr-manager添加如下配置参数：用于配置 HPA 控制器使用 REST 客户端获取 metrics 数据。
+--horizontal-pod-autoscaler-use-rest-clients=true
+
+#6.修改插件metrics-server-deployment配置文件,metrics-server插件位于kubernetes-src.tar.gz里的cluster/addons/metrics-server/ 目录下。
+mkdir -p /etc/kubernetes/metrics-server
+cp cluster/addons/metrics-server/metrics-server-deployment.yaml /etc/kubernetes/metrics-server
+
+#修改配置文件
+sed -i "s@image.*metrics-server-amd64.*@image: mirrorgooglecontainers/metrics-server-amd64:v0.3.1@g" /etc/kubernetes/metrics-server/metrics-server-deployment.yaml
+
+sed -i "/ports:/i\        - --source=kubernetes.summary_api:https://kubernetes.default?kubeletHttps=true&kubeletPort=10250" /etc/kubernetes/metrics-server/metrics-server-deployment.yaml
+
+sed -i "s@image.*addon-resizer.*@image: siriuszg/addon-resizer:1.8.4@g" /etc/kubernetes/metrics-server/metrics-server-deployment.yaml
+
+# metrics-server 的参数格式与 heapster 类似。由于 kubelet 只在 10250 监听 https 请求，故添加相关参数；
+
+# 新建一个ClusterRoleBindings 定义文件；授予kube-system:metrics-server ServiceAccount访问kubelet API的相关权限：
+cat > /etc/kubernetes/metrics-server/auth-kubelet.yaml <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metrics-server:system:kubelet-api-admin
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kubelet-api-admin
+subjects:
+- kind: ServiceAccount
+  name: metrics-server
+  namespace: kube-system
+EOF
+
+#7.创建 metrics-server
+kubectl create -f /etc/kubernetes/metrics-server/
+
+#8.查看运行情况
+kubectl get pods -n kube-system |grep metrics-server
+
+kubectl get svc -n kube-system|grep metrics-server
+
+kubectl -n kube-system describe pods metrics-server
+
+#9.查看 metrcs-server 输出的 metrics
+
+#metrics-server 输出的 APIs：https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/resource-metrics-api.md
+
+# 通过 kube-apiserver 或 kubectl proxy 访问：
+https://192.168.10.100:8443/apis/metrics.k8s.io/v1beta1/nodes
+https://192.168.10.100:8443/apis/metrics.k8s.io/v1beta1/pods
+https://192.168.10.100:8443/apis/metrics.k8s.io/v1beta1/namespace//pods/
+
+# 直接使用 kubectl 命令访问：
+kubectl get --raw apis/metrics.k8s.io/v1beta1/nodes kubectl get --raw apis/metrics.k8s.io/v1beta1/pods kubectl get --raw apis/metrics.k8s.io/v1beta1/nodes/ kubectl get --raw apis/metrics.k8s.io/v1beta1/namespace//pods/
+
+kubectl get --raw "/apis/metrics.k8s.io/v1beta1" | jq .
+{
+  "kind": "APIResourceList",
+  "apiVersion": "v1",
+  "groupVersion": "metrics.k8s.io/v1beta1",
+  "resources": [
+    {
+      "name": "nodes",
+      "singularName": "",
+      "namespaced": false,
+      "kind": "NodeMetrics",
+      "verbs": [
+        "get",
+        "list"
+      ]
+    },
+    {
+      "name": "pods",
+      "singularName": "",
+      "namespaced": true,
+      "kind": "PodMetrics",
+      "verbs": [
+        "get",
+        "list"
+      ]
+    }
+  ]
+}
+
+kubectl get --raw "/apis/metrics.k8s.io/v1beta1/nodes" | jq .
+{
+  "kind": "NodeMetricsList",
+  "apiVersion": "metrics.k8s.io/v1beta1",
+  "metadata": {
+    "selfLink": "/apis/metrics.k8s.io/v1beta1/nodes"
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "k8s-03m",
+        "selfLink": "/apis/metrics.k8s.io/v1beta1/nodes/k8s-03m",
+        "creationTimestamp": "2018-06-16T10:24:03Z"
+      },
+      "timestamp": "2018-06-16T10:23:00Z",
+      "window": "1m0s",
+      "usage": {
+        "cpu": "133m",
+        "memory": "1115728Ki"
+      }
+    },
+    {
+      "metadata": {
+        "name": "k8s-01m",
+        "selfLink": "/apis/metrics.k8s.io/v1beta1/nodes/k8s-01m",
+        "creationTimestamp": "2018-06-16T10:24:03Z"
+      },
+      "timestamp": "2018-06-16T10:23:00Z",
+      "window": "1m0s",
+      "usage": {
+        "cpu": "221m",
+        "memory": "6799908Ki"
+      }
+    },
+    {
+      "metadata": {
+        "name": "k8s-02m",
+        "selfLink": "/apis/metrics.k8s.io/v1beta1/nodes/k8s-02m",
+        "creationTimestamp": "2018-06-16T10:24:03Z"
+      },
+      "timestamp": "2018-06-16T10:23:00Z",
+      "window": "1m0s",
+      "usage": {
+        "cpu": "76m",
+        "memory": "1130180Ki"
+      }
+    }
+  ]
+}
+# /apis/metrics.k8s.io/v1beta1/nodes 和 /apis/metrics.k8s.io/v1beta1/pods 返回的 usage 包含 CPU 和 Memory；
 ```
 
 ### 2.10、各节点重启操作
@@ -3206,11 +3742,11 @@ sudo rm -rf /etc/etcd/cert/*
 sudo rm -rf /usr/local/k8s/bin/etcd
 ```
 
+## 3、kubernetes核心服务配置说明
 
 
 
-
-
+## 4、kubernetes的版本升级
 
 
 
